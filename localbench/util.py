@@ -50,10 +50,11 @@ def load_all() -> list[dict]:
     for p in sorted(RESULTS.glob("*.json")):
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(d, dict) and "kind" in d and "model" in d:  # skip state files etc.
             d["_file"] = p.name
             out.append(d)
-        except Exception:
-            pass
     return out
 
 

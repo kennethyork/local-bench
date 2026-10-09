@@ -21,6 +21,16 @@ Unlike BridgeBench's editorial ratings, every score here is measured automatical
 
 "Every local model" means every installed Ollama model (duplicate tags are counted once) plus any text-generation models already in your Hugging Face cache.
 
+## The whole Ollama library
+
+**Double-click `bench-library.bat`** to benchmark every model in the [Ollama library](https://ollama.com/library) that fits your GPU.
+
+- **What's included:** every size at its default quantization. Duplicate tags, base/text variants, MLX (Apple-only) builds, cloud tags, embedding models and context-length variants are left out. On a 24 GB card that's about 377 models and 2.5 TB of downloads.
+- **One model at a time:** each model is pulled, fit-checked, benchmarked, then **deleted**, so only one is on disk at a time. Models you already had are never deleted; tags with the same weights as one of yours reuse your copy and its results. `--keep` keeps everything instead.
+- **Resumable:** close the window whenever you like. Progress is saved in `results/library_state.json` and the next launch continues from there. `--retry-failed` retries models that failed.
+- **Sleep and publishing:** the PC is kept awake while it runs, and `docs/` is refreshed every 5 models.
+- **How long it takes:** about 9–10 days in Silent mode, 4–6 in Balanced (`--governor balanced`), 2–3 in Turbo, plus download time. Use `--dry-run` to see the plan, or `--family qwen3,gemma3` / `--max-models 20` to do a slice.
+
 ## Protecting the GPU
 
 - **Fit check.** Each model's weights, plus its KV cache at the context actually used (`--num-ctx`, default 8,192), plus overhead must fit in free VRAM (92% of total, minus what other apps hold). Models that don't fit are skipped. If Ollama spills any of a model onto the CPU after loading, the run stops. `--force` overrides the check.

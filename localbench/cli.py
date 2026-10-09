@@ -215,6 +215,25 @@ def cmd_run(a):
                                        no_responses=False, no_gallery=False, open=False))
 
 
+def cmd_library(a):
+    from . import library
+    cats = _cats(a)
+    a.need_ctx = needed_ctx(a, not a.no_speed)
+    try:
+        library.run_library(
+            a, cats,
+            speed_fn=lambda label: _speed(label, a),
+            bench_fn=lambda label: _bench(label, a, cats),
+            done_fn=lambda label: already_done(label, cats, not a.no_speed, a.limit),
+            rebuild_fn=lambda: report.build(kwh_price=a.kwh_price),
+            publish_fn=lambda: cmd_publish(argparse.Namespace(out="docs", kwh_price=a.kwh_price, full_system=False,
+                                                              no_responses=False, no_gallery=False, open=False)))
+    except KeyboardInterrupt:
+        print("\nStopped. Progress is saved - run the same command again to resume.")
+    if not a.dry_run:
+        _report(a)
+
+
 def cmd_speed(a):
     for spec in fit_gate(a.models, a, needed_ctx(a, True)):
         _speed(spec, a)
@@ -324,6 +343,24 @@ def main(argv=None):
     sp.add_argument("--publish", action="store_true", help="refresh docs/index.html for GitHub Pages when done")
     sp.set_defaults(fn=cmd_run)
 
+    sp = sub.add_parser("library", help="benchmark every Ollama library model that fits this GPU (resumable)")
+    common(sp)
+    speed_args(sp)
+    sp.add_argument("-c", "--categories", default="default", help="same as run")
+    sp.add_argument("--limit", type=int, default=40, help="same as run")
+    sp.add_argument("--max-tokens", type=int, help="same as run")
+    sp.add_argument("--num-ctx", type=int, default=8192, help="same as run")
+    sp.add_argument("--no-speed", action="store_true", help="skip the speed test")
+    sp.add_argument("--redo", action="store_true", help="rerun models that already have results")
+    sp.add_argument("--publish", action="store_true", help="refresh docs/ every 5 models and at the end")
+    sp.add_argument("--dry-run", action="store_true", help="list what would be downloaded and tested, then stop")
+    sp.add_argument("--refresh", action="store_true", help="re-read the library catalog from ollama.com")
+    sp.add_argument("--family", help="only these families, comma list (e.g. qwen3,gemma3)")
+    sp.add_argument("--max-models", type=int, help="stop after this many models (handy for a trial)")
+    sp.add_argument("--keep", action="store_true", help="keep downloaded models instead of deleting after testing")
+    sp.add_argument("--retry-failed", action="store_true", help="retry models that failed last time")
+    sp.set_defaults(fn=cmd_library)
+
     sp = sub.add_parser("speed", help="speed / VRAM / power only")
     common(sp)
     speed_args(sp)
@@ -353,7 +390,7 @@ def main(argv=None):
     sp.set_defaults(fn=_report)
 
     a = p.parse_args(argv)
-    if hasattr(a, "models") and not a.models:
+    if hasattr(a, "models") and not a.models and a.cmd != "library":
         a.models = default_models()
         print("Models:", ", ".join(a.models) or "(none found - is Ollama running?)")
     if hasattr(a, "limit") and a.limit == 0:
