@@ -1,0 +1,7 @@
+# local environment
+.venv/
+__pycache__/
+*.pyc
+
+# raw benchmark output (full system info + every response); docs/ holds the public copy
+results/
