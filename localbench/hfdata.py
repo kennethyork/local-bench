@@ -29,12 +29,12 @@ def rows(repo: str, config: str, split: str) -> list[dict]:
         import pandas as pd
         from huggingface_hub import HfApi, hf_hub_download
 
-        try:
+        # local copy first: once a question set is downloaded, Hugging Face is never contacted again
+        paths = _cached_shards(repo, config, split)
+        if not paths:
             files = sorted(f for f in HfApi().list_repo_files(repo, repo_type="dataset", revision=REV)
                            if f.startswith(f"{config}/{split}/") and f.endswith(".parquet"))
             paths = [hf_hub_download(repo, f, repo_type="dataset", revision=REV) for f in files]
-        except Exception:
-            paths = _cached_shards(repo, config, split)  # offline / HF unreachable: use what's cached
         if not paths:
             raise RuntimeError(f"no parquet files for {repo} [{config}/{split}] (online or in cache)")
         df = pd.concat([pd.read_parquet(p) for p in paths])
