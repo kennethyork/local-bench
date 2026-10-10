@@ -85,44 +85,70 @@ def _generate_with_recovery(backend: Backend, messages, max_tokens, num_ctx, log
             raise ServerDown(f"Ollama keeps dropping the connection: {e}") from e
 
 
+def _answer(backend: Backend, it: Item, mt: int, num_ctx, log):
+    """Generate one answer. Returns (text, output_tokens, error, truncated, seconds)."""
+    t = time.perf_counter()
+    try:
+        r = _generate_with_recovery(backend, it.messages, mt, num_ctx, log)
+        return r.text, r.output_tokens, None, r.extra.get("done_reason") == "length", time.perf_counter() - t
+    except ServerDown:
+        raise  # abort: a dead server must never be scored as wrong answers
+    except Exception as e:
+        return "", 0, str(e)[:200], False, time.perf_counter() - t
+
+
 def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens: int | None = None,
-                 log=print, on_record=None, governor=None, num_ctx: int | None = None) -> dict:
+                 log=print, on_record=None, governor=None, num_ctx: int | None = None,
+                 parallel: int = 1) -> dict:
+    """Ask every item and grade it. With parallel > 1, questions go out in waves of that size
+    (the server must have that many slots); results, grading and logs stay in question order."""
+    from concurrent.futures import ThreadPoolExecutor
+
     items = cat.items(limit)
     records, total_score = [], 0.0
     t0 = time.perf_counter()
     out_tokens = 0
-    with gpu.GpuSampler(interval=0.2) as s:
-        for i, it in enumerate(items, 1):
-            mt = max_tokens or it.max_tokens or cat.max_tokens
-            if backend.think:
-                mt += 4096
-            if governor:
-                governor.before_request()
-            t_item = time.perf_counter()
-            try:
-                r = _generate_with_recovery(backend, it.messages, mt, num_ctx, log)
-                text, n_out, err, trunc = r.text, r.output_tokens, None, r.extra.get("done_reason") == "length"
-            except ServerDown:
-                raise  # abort: a dead server must never be scored as wrong answers
-            except Exception as e:
-                text, n_out, err, trunc = "", 0, str(e)[:200], False
-            item_s = time.perf_counter() - t_item
-            g = cat.grade(it, text) if not err else Grade(0.0, f"generation error: {err}")
-            out_tokens += n_out
-            total_score += g.score
-            rec = {"id": it.id, "score": round(g.score, 4), "detail": g.detail, "output_tokens": n_out,
-                   "seconds": round(item_s, 2), "truncated": trunc,
-                   "response": text[-1500:], **g.extra}
-            records.append(rec)
-            if on_record:
-                on_record(it, text, rec)
-            # one line per question, so slow or paced runs never look frozen
-            log(f"  {cat.name:<13} {i:>4}/{len(items)}  score {100 * total_score / i:5.1f}  "
-                f"({n_out} tok in {item_s:.1f}s)")
-            if governor:
-                governor.after_request(n_out, item_s, on_rest=lambda sec: log(
-                    f"                     resting {sec:.0f}s ({governor.name} governor: GPU "
-                    f"{gpu.temperature_c()}C / {gpu.power_w() or 0:.0f} W)"))
+    pool = ThreadPoolExecutor(max_workers=parallel) if parallel > 1 else None
+    try:
+        with gpu.GpuSampler(interval=0.2) as s:
+            for start in range(0, len(items), parallel):
+                wave = items[start:start + parallel]
+                if governor:
+                    governor.before_request()
+                t_wave = time.perf_counter()
+                jobs = []
+                for it in wave:
+                    mt = max_tokens or it.max_tokens or cat.max_tokens
+                    if backend.think:
+                        mt += 4096
+                    jobs.append((it, mt))
+                if pool:
+                    answers = list(pool.map(lambda j: _answer(backend, j[0], j[1], num_ctx, log), jobs))
+                else:
+                    answers = [_answer(backend, it, mt, num_ctx, log) for it, mt in jobs]
+                wave_s, wave_tok = time.perf_counter() - t_wave, 0
+                for k, ((it, _), (text, n_out, err, trunc, item_s)) in enumerate(zip(jobs, answers)):
+                    i = start + k + 1
+                    g = cat.grade(it, text) if not err else Grade(0.0, f"generation error: {err}")
+                    out_tokens += n_out
+                    wave_tok += n_out
+                    total_score += g.score
+                    rec = {"id": it.id, "score": round(g.score, 4), "detail": g.detail, "output_tokens": n_out,
+                           "seconds": round(item_s, 2), "truncated": trunc,
+                           "response": text[-1500:], **g.extra}
+                    records.append(rec)
+                    if on_record:
+                        on_record(it, text, rec)
+                    # one line per question, so slow or paced runs never look frozen
+                    log(f"  {cat.name:<13} {i:>4}/{len(items)}  score {100 * total_score / i:5.1f}  "
+                        f"({n_out} tok in {item_s:.1f}s)")
+                if governor:
+                    governor.after_request(wave_tok, wave_s, on_rest=lambda sec: log(
+                        f"                     resting {sec:.0f}s ({governor.name} governor: GPU "
+                        f"{gpu.temperature_c()}C / {gpu.power_w() or 0:.0f} W)"))
+    finally:
+        if pool:
+            pool.shutdown(wait=True)
     elapsed = time.perf_counter() - t0
     n = len(items)
     mean = total_score / n if n else 0.0
@@ -132,7 +158,7 @@ def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens:
     return {
         "category": cat.name, "title": cat.title, "n": n, "score": 100 * mean,
         "ci95": 100 * 1.96 * (var / n) ** 0.5 if n > 1 else 0.0,
-        "wins": wins, "elapsed_s": elapsed, "output_tokens": out_tokens,
+        "wins": wins, "elapsed_s": elapsed, "output_tokens": out_tokens, "parallel": parallel,
         "energy_j": energy_j, "avg_power_w": s.avg_power_w,
         "peak_power_w": s.peak_power_w, "peak_temp_c": s.peak_temp_c,
         "wh_per_win": (energy_j / 3600 / wins) if energy_j and wins else None,

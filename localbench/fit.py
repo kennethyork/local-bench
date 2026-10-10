@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import requests
 
 from . import gpu
-from .backends import OLLAMA_URL, list_ollama_models, ollama_ps
+from .backends import url, list_ollama_models, ollama_ps
 
 OVERHEAD_MB = 800  # CUDA context, compute buffers, graph scratch
 
@@ -86,7 +86,7 @@ def estimate_ollama(name: str, num_ctx: int, budget: float | None) -> Fit:
         return Fit(f"ollama:{name}", None, budget, note="not pulled yet")
     weights = size / 2**20
     try:
-        mi = requests.post(f"{OLLAMA_URL}/api/show", json={"model": name}, timeout=30).json().get("model_info", {})
+        mi = requests.post(f"{url()}/api/show", json={"model": name}, timeout=30).json().get("model_info", {})
         arch = mi.get("general.architecture", "")
         g = lambda k: mi.get(f"{arch}.{k}")  # noqa: E731
         layers, heads = g("block_count"), g("attention.head_count")
@@ -95,7 +95,9 @@ def estimate_ollama(name: str, num_ctx: int, budget: float | None) -> Fit:
             kv_heads = max(kv_heads)
         hd_k = g("attention.key_length") or (g("embedding_length") // heads if heads else None)
         hd_v = g("attention.value_length") or hd_k
-        kv = _kv_mb(layers, kv_heads, hd_k, hd_v, num_ctx) if all((layers, kv_heads, hd_k)) else weights * 0.1
+        # Ollama never allocates more context than the model was trained for (e.g. 4096 for older models)
+        ctx = min(num_ctx, g("context_length") or num_ctx)
+        kv = _kv_mb(layers, kv_heads, hd_k, hd_v, ctx) if all((layers, kv_heads, hd_k)) else weights * 0.1
     except Exception:
         kv = weights * 0.1
     return Fit(f"ollama:{name}", weights + kv + OVERHEAD_MB, budget, weights, kv)
@@ -104,6 +106,21 @@ def estimate_ollama(name: str, num_ctx: int, budget: float | None) -> Fit:
 def estimate(spec_label: str, num_ctx: int, budget: float | None) -> Fit:
     """spec_label is 'ollama:<name>'."""
     return estimate_ollama(spec_label.partition(":")[2], num_ctx, budget)
+
+
+def parallel_slots(spec_label: str, num_ctx: int, max_slots: int, headroom: float = 0.92) -> int:
+    """How many questions this model can answer at once: each extra slot needs its own full KV cache
+    (plus some compute buffer), and the total must fit both the card and what's free right now."""
+    f = estimate(spec_label, num_ctx, None)
+    if f.weights_mb is None or f.kv_mb is None:
+        return 1
+    limit = min(b for b in (gpu_budget_mb(headroom), free_budget_mb(headroom)) if b is not None) \
+        if gpu.gpu_info() else None
+    for slots in (4, 3, 2):
+        if slots <= max_slots and (limit is None or
+                                   f.weights_mb + f.kv_mb * slots + OVERHEAD_MB + 256 * (slots - 1) <= limit):
+            return slots
+    return 1
 
 
 def ollama_spilled(name: str) -> str | None:

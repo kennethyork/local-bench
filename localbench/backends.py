@@ -15,6 +15,16 @@ import requests
 OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 if not OLLAMA_URL.startswith("http"):
     OLLAMA_URL = "http://" + OLLAMA_URL
+_active_url = [OLLAMA_URL]  # switched to the private benchmark server while one is running (see server.py)
+
+
+def url() -> str:
+    """Base URL of the Ollama server benchmarks talk to."""
+    return _active_url[0]
+
+
+def use_url(u: str | None) -> None:
+    _active_url[0] = u or OLLAMA_URL
 
 THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
 
@@ -95,7 +105,7 @@ class OllamaBackend(Backend):
         self._send_think = True  # flipped off if the server/model rejects the field
 
     def _post(self, path, payload, stream=False, timeout=3600):
-        r = requests.post(f"{OLLAMA_URL}{path}", json=payload, stream=stream, timeout=timeout)
+        r = requests.post(f"{url()}{path}", json=payload, stream=stream, timeout=timeout)
         if r.status_code >= 400:
             raise RuntimeError(f"Ollama {path} {r.status_code}: {r.text[:300]}")
         return r
@@ -186,15 +196,19 @@ class ServerDown(RuntimeError):
 
 def ollama_up() -> bool:
     try:
-        return requests.get(f"{OLLAMA_URL}/api/version", timeout=3).ok
+        return requests.get(f"{url()}/api/version", timeout=3).ok
     except requests.RequestException:
         return False
 
 
 def ensure_ollama(wait_s: float = 90, log=print) -> bool:
-    """Make sure the Ollama server is running; start the desktop app (or `ollama serve`) if not."""
+    """Make sure the Ollama server is running; start the desktop app (or `ollama serve`) if not.
+    While LocalBench's private benchmark server is in use, that server is restarted instead."""
     if ollama_up():
         return True
+    from .server import PRIVATE
+    if PRIVATE.active:
+        return PRIVATE.restart(log=log)
     import shutil
     import subprocess
     candidates = [os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama app.exe"),
@@ -223,9 +237,9 @@ def is_pulled(name: str) -> bool:
     return name.lower() in names or f"{name}:latest".lower() in names
 
 
-def pull(tag: str, log=print) -> None:
-    """Pull a model from the Ollama library, printing sparse progress."""
-    r = requests.post(f"{OLLAMA_URL}/api/pull", json={"model": tag, "stream": True}, stream=True, timeout=None)
+def pull(tag: str, log=print, base: str | None = None) -> None:
+    """Pull a model from the Ollama library, printing sparse progress. `base` overrides the server."""
+    r = requests.post(f"{base or url()}/api/pull", json={"model": tag, "stream": True}, stream=True, timeout=None)
     r.raise_for_status()
     last_pct, last_status = -10, None
     for line in r.iter_lines():
@@ -263,20 +277,20 @@ def ollama_entry(name: str) -> dict | None:
 
 def list_ollama_models() -> list[dict]:
     try:
-        return requests.get(f"{OLLAMA_URL}/api/tags", timeout=10).json().get("models", [])
+        return requests.get(f"{url()}/api/tags", timeout=10).json().get("models", [])
     except Exception:
         return []
 
 
 def ollama_ps() -> list[dict]:
     try:
-        return requests.get(f"{OLLAMA_URL}/api/ps", timeout=10).json().get("models", [])
+        return requests.get(f"{url()}/api/ps", timeout=10).json().get("models", [])
     except Exception:
         return []
 
 
 def ollama_version() -> str | None:
     try:
-        return requests.get(f"{OLLAMA_URL}/api/version", timeout=5).json().get("version")
+        return requests.get(f"{url()}/api/version", timeout=5).json().get("version")
     except Exception:
         return None

@@ -9,6 +9,8 @@ from . import fit, perf, report
 from .backends import ensure_ollama, list_ollama_models, make_backend, not_benchmarkable, ollama_entry, ollama_name
 from .categories import DEFAULT, registry, run_category
 from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status
+from .server import PORT as PRIVATE_PORT
+from .server import PRIVATE
 from .util import RESULTS, load_all, save, slug
 
 
@@ -154,7 +156,16 @@ def _backend(spec, a, profile=None, num_ctx=None):
                         keep_alive=f"{ka}s" if ka else "10m", num_ctx=num_ctx)
 
 
+def _server(slots: int, a) -> int:
+    """Point LocalBench at its private Ollama server with `slots` parallel slots (1 = normal).
+    Returns the slots actually in use (1 if the private server isn't available or is disabled)."""
+    if a.parallel <= 1:
+        return 1
+    return slots if PRIVATE.start(slots) else 1
+
+
 def _speed(spec, a):
+    _server(1, a)  # the speed test is always one request at a time, comparable across runs
     b = _backend(spec, a)
     try:
         with Governor(a.governor, pace=False, max_temp_c=a.max_temp) as gov:
@@ -182,8 +193,10 @@ def _bench(spec, a, cats):
             ui_dir.mkdir(parents=True, exist_ok=True)
             (ui_dir / (item.id.split("/")[-1] + ".html")).write_text(rec["html"] or "", encoding="utf-8")
 
+    slots = fit.parallel_slots(b.label, ctx, a.parallel, a.vram_headroom) if a.parallel > 1 else 1
+    slots = _server(slots, a) if a.parallel > 1 else 1
     print(f"[bench] {b.label}  categories={','.join(cats)}  limit={a.limit or 'all'}  ctx={ctx}"
-          f"  think={a.think}  governor={a.governor}  max-temp={a.max_temp}C")
+          f"  think={a.think}  governor={a.governor}  max-temp={a.max_temp}C  parallel={slots}")
     gov = Governor(a.governor, max_temp_c=a.max_temp)
     results = []
     try:
@@ -194,7 +207,7 @@ def _bench(spec, a, cats):
                 print(f"  governor power cap: {gov.cap.outcome}")
             for name in cats:
                 r = run_category(b, registry()[name], a.limit, a.max_tokens, on_record=keep_ui,
-                                 governor=gov, num_ctx=ctx)
+                                 governor=gov, num_ctx=ctx, parallel=slots)
                 print(f"  => {r['title']}: {r['score']:.1f} +/- {r['ci95']:.1f}  ({r['wins']}/{r['n']} solved, "
                       f"{r['elapsed_s']:.0f}s, peak {r['peak_temp_c']}C / {r['peak_power_w'] or 0:.0f} W)")
                 results.append(r)
@@ -208,7 +221,7 @@ def _bench(spec, a, cats):
         print(f"  keeping the {len(results)} finished categor{'y' if len(results) == 1 else 'ies'}")
     b.unload()
     path = save("bench", b.label, {"settings": {"limit": a.limit, "think": a.think, "max_tokens": a.max_tokens,
-                                                "num_ctx": ctx},
+                                                "num_ctx": ctx, "parallel": slots},
                                     "model_info": info, "governor": gov.summary(), "categories": results})
     print("  saved", path.name)
 
@@ -353,6 +366,9 @@ def main(argv=None):
         sp.add_argument("--vram-headroom", type=float, default=0.92,
                         help="fraction of total VRAM a model may use (minus what other apps hold)")
         sp.add_argument("--force", action="store_true", help="run models even if the fit check says they won't fit")
+        sp.add_argument("--parallel", type=int, default=4, choices=[1, 2, 3, 4],
+                        help="max questions answered at once (default 4; each model gets as many as fit in VRAM). "
+                             "1 = one at a time on your normal Ollama server.")
 
     def speed_args(sp):
         sp.add_argument("--ctx", default="128,1024,4096", help="approx prompt sizes in tokens (comma list)")
@@ -393,6 +409,8 @@ def main(argv=None):
     sp.add_argument("--max-models", type=int, help="stop after this many models (handy for a trial)")
     sp.add_argument("--keep", action="store_true", help="keep downloaded models instead of deleting after testing")
     sp.add_argument("--retry-failed", action="store_true", help="retry models that failed last time")
+    sp.add_argument("--no-prefetch", action="store_true",
+                    help="don't download the next model in the background while the current one is tested")
     sp.set_defaults(fn=cmd_library)
 
     sp = sub.add_parser("speed", help="speed / VRAM / power only")
@@ -429,7 +447,14 @@ def main(argv=None):
         print("Models:", ", ".join(a.models) or "(none found - is Ollama running?)")
     if hasattr(a, "limit") and a.limit == 0:
         a.limit = None
-    a.fn(a)
+    try:
+        if getattr(a, "parallel", 1) > 1 and a.cmd in ("run", "library", "speed") and not getattr(a, "dry_run", False):
+            if PRIVATE.start(1):
+                print(f"Using LocalBench's own Ollama server (port {PRIVATE_PORT}) so questions can run "
+                      f"{a.parallel} at a time; your normal Ollama setup is untouched.")
+        a.fn(a)
+    finally:
+        PRIVATE.stop()
 
 
 if __name__ == "__main__":

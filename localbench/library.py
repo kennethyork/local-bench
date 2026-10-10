@@ -9,14 +9,15 @@ import html
 import json
 import re
 import shutil
+import threading
 import time
 from datetime import datetime
 
 import requests
 
 from . import fit
-from .backends import (OLLAMA_URL, ensure_ollama, list_ollama_models, not_benchmarkable, ollama_entry, ollama_up,
-                       pull)
+from .backends import (OLLAMA_URL, ensure_ollama, is_pulled, list_ollama_models, not_benchmarkable, ollama_entry,
+                       ollama_up, pull, url)
 from .util import RESULTS
 
 STATE = RESULTS / "library_state.json"
@@ -145,7 +146,10 @@ def build_queue(st: dict, budget_mb: float, refresh: bool, families: list[str] |
 
 def delete(tag: str, log=print) -> bool:
     try:
-        requests.delete(f"{OLLAMA_URL}/api/delete", json={"model": tag}, timeout=60).raise_for_status()
+        r = requests.delete(f"{url()}/api/delete", json={"model": tag}, timeout=60)
+        if r.status_code == 404:  # not on disk (e.g. its download failed): nothing to clean up
+            return True
+        r.raise_for_status()
         return True
     except requests.RequestException as e:
         log(f"  could not delete {tag} yet ({e.__class__.__name__}); will retry on the next run")
@@ -237,7 +241,40 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         free_b = fit.free_budget_mb(a.vram_headroom)
         return free_b is None or need_mb <= free_b
 
-    def process(t, header: str) -> str:
+    prefetch: dict[str, threading.Thread] = {}  # tag -> background download of the NEXT model
+
+    def start_prefetch(nt, current_gb: float):
+        """Download the next model while this one is benchmarked (via your normal Ollama server,
+        which doesn't restart between models). Skipped when it wouldn't be needed or wouldn't fit."""
+        if nt is None or a.no_prefetch:
+            return
+        ntag = by_digest.get(nt["digest"], nt["tag"])
+        if ntag in installed or ntag in keep or ntag in prefetch or (done_fn(f"ollama:{ntag}") and not a.redo):
+            return
+        if not room_now((nt["size_gb"] or 0) * 953.7 + 1500):
+            return
+        if models_dir_free_gb() < (nt["size_gb"] or 0) + current_gb + 5:
+            return
+        try:
+            requests.get(f"{OLLAMA_URL}/api/version", timeout=3).raise_for_status()
+        except requests.RequestException:
+            return  # normal Ollama server not running: download normally when it's this model's turn
+        if ntag not in st.setdefault("to_delete", []):  # if the run is interrupted, clean it up next time
+            st["to_delete"].append(ntag)
+            save_state(st)
+
+        def bg():
+            try:
+                pull(ntag, log=lambda *_: None, base=OLLAMA_URL)
+            except Exception:
+                pass  # the normal pull path will retry and report
+
+        th = threading.Thread(target=bg, daemon=True)
+        th.start()
+        prefetch[ntag] = th
+        log(f"  downloading the next model in the background: {ntag} ({nt['size_gb']} GB)")
+
+    def process(t, header: str, nxt=None) -> str:
         """Pull -> check -> benchmark -> clean up one model. Returns its final status."""
         tag = by_digest.get(t["digest"], t["tag"])  # reuse your copy (and its results) if you have it
         label = f"ollama:{tag}"
@@ -257,10 +294,16 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
             return "deferred"
         try:
             if not had_it:
-                if models_dir_free_gb() < (t["size_gb"] or 0) + 5:
-                    raise RuntimeError(f"not enough disk space for {t['size_gb']} GB (keeping 5 GB spare)")
-                log("  pulling ...")
-                pull(tag, log)
+                if tag in prefetch:
+                    log("  finishing the background download ...")
+                    prefetch.pop(tag).join()
+                if not is_pulled(tag):
+                    if models_dir_free_gb() < (t["size_gb"] or 0) + 5:
+                        raise RuntimeError(f"not enough disk space for {t['size_gb']} GB (keeping 5 GB spare)")
+                    log("  pulling ...")
+                    pull(tag, log)
+                if tag in st.get("to_delete", []):  # it's this model's turn now; the finally below cleans it up
+                    st["to_delete"].remove(tag)
             why = not_benchmarkable(tag, ollama_entry(tag))  # some non-chat families aren't badged as such
             if why:
                 rec.update(status="skipped", reason=why)
@@ -275,6 +318,7 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
                 rec.update(status="deferred", reason=f"other apps held {fit.other_apps_gb():.1f} GB of VRAM")
                 log(f"  deferred: needs ~{f.need_mb / 1024:.1f} GB, other apps hold {fit.other_apps_gb():.1f} GB")
                 return "deferred"
+            start_prefetch(nxt, t["size_gb"] or 0)  # overlap the next download with this benchmark
             ok = speed_fn(label) if not a.no_speed else True
             if not ok:
                 raise RuntimeError("speed test failed (see log above)")
@@ -305,7 +349,7 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
 
     deferred = []
     for i, t in enumerate(compatible, 1):
-        status = process(t, f"library [{i}/{len(compatible)}]")
+        status = process(t, f"library [{i}/{len(compatible)}]", compatible[i] if i < len(compatible) else None)
         if status == "deferred":
             deferred.append(t)
         elif status == "pending" and not ensure_ollama(log=log):
