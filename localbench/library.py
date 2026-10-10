@@ -224,7 +224,8 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
 
     counts = {}
     for v in st["models"].values():
-        counts[v["status"]] = counts.get(v["status"], 0) + 1
+        s = v.get("status", "pending")  # a model mid-test when the window was closed has no status yet
+        counts[s] = counts.get(s, 0) + 1
     total_gb = sum(t["size_gb"] or 0 for t in compatible)
     log(f"\nOllama library: {len(st['catalog'])} chat families, {len(queue)} local model sizes. "
         f"This GPU holds up to {(gpu_b or 0) / 1024:.1f} GB per model, so {incompatible} are too big for it.")
