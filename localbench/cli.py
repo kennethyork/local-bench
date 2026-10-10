@@ -6,7 +6,7 @@ import webbrowser
 from pathlib import Path
 
 from . import fit, perf, report
-from .backends import ensure_ollama, list_ollama_models, make_backend, ollama_name
+from .backends import ensure_ollama, list_ollama_models, make_backend, not_benchmarkable, ollama_entry, ollama_name
 from .categories import DEFAULT, registry, run_category
 from .governor import PROFILES, Governor, cap_status
 from .util import RESULTS, load_all, save, slug
@@ -20,6 +20,19 @@ def default_models() -> list[str]:
             seen.add(m.get("digest"))
             out.append("ollama:" + m["name"])
     return sorted(out)
+
+
+def benchmarkable(specs: list[str]) -> list[str]:
+    """Drop cloud models and models that can't chat (embedders), saying why."""
+    keep = []
+    for spec in specs:
+        name = ollama_name(spec)
+        why = not_benchmarkable(name, ollama_entry(name))
+        if why:
+            print(f"  skip {name}: {why}")
+        else:
+            keep.append(spec)
+    return keep
 
 
 def already_done(label: str, cats: list[str], speed: bool, limit: int | None) -> bool:
@@ -55,16 +68,17 @@ def needed_ctx(a, with_speed: bool) -> int:
 def fit_gate(specs: list[str], a, ctx: int) -> list[str]:
     """Keep only models that fit this GPU (weights + KV at `ctx` + overhead within free VRAM)."""
     budget = fit.budget_mb(a.vram_headroom)
-    keep = []
+    keep, too_big = [], 0
     print(f"GPU fit check at {ctx:,}-token context:")
-    for spec in specs:
+    for spec in benchmarkable(specs):
         f = fit.estimate(_label(spec), ctx, budget)
         print("  " + f.line())
         if f.fits or a.force:
             keep.append((f.need_mb or 0, spec))
-    skipped = len(specs) - len(keep)
-    if skipped:
-        print(f"Skipping {skipped} model(s) that don't fit. Use a smaller quant, lower --num-ctx, or --force.")
+        else:
+            too_big += 1
+    if too_big:
+        print(f"Skipping {too_big} model(s) that don't fit. Use a smaller quant, lower --num-ctx, or --force.")
     return [spec for _, spec in sorted(keep)]  # smallest first: a partial run still covers the most models
 
 
@@ -72,7 +86,9 @@ def cmd_models(a):
     budget = fit.budget_mb(0.92)
     print(f"Ollama models (fit at an 8,192-token context; free VRAM budget {(budget or 0) / 1024:.1f} GB):")
     for spec in default_models():
-        print("  " + fit.estimate(spec, 8192, budget).line())
+        name = ollama_name(spec)
+        why = not_benchmarkable(name, ollama_entry(name))
+        print(f"  --  {spec:<44} skipped: {why}" if why else "  " + fit.estimate(spec, 8192, budget).line())
     print("\nGovernor profiles (from Ocadox):")
     for name, p in PROFILES.items():
         print(f"  {name:<9} pace {p.tokens_per_second or 'off'} tok/s, ceiling {p.temperature_ceiling_c or 'none'}C, "

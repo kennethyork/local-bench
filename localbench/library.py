@@ -15,7 +15,8 @@ from datetime import datetime
 import requests
 
 from . import fit
-from .backends import OLLAMA_URL, ensure_ollama, list_ollama_models, ollama_up, pull
+from .backends import (OLLAMA_URL, ensure_ollama, list_ollama_models, not_benchmarkable, ollama_entry, ollama_up,
+                       pull)
 from .util import RESULTS
 
 STATE = RESULTS / "library_state.json"
@@ -245,6 +246,11 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
                     raise RuntimeError(f"not enough disk space for {t['size_gb']} GB (keeping 5 GB spare)")
                 log("  pulling ...")
                 pull(tag, log)
+            why = not_benchmarkable(tag, ollama_entry(tag))  # some non-chat families aren't badged as such
+            if why:
+                rec.update(status="skipped", reason=why)
+                log(f"  skip: {why}")
+                continue
             f = fit.estimate(label, a.need_ctx, budget)
             log("  " + f.line())
             if not f.fits:

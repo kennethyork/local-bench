@@ -245,6 +245,22 @@ def pull(tag: str, log=print) -> None:
         last_status = st
 
 
+def not_benchmarkable(name: str, entry: dict | None = None) -> str | None:
+    """Why a model can't be benchmarked locally (None = fine). `entry` is its /api/tags row, if pulled."""
+    tag = name.split(":", 1)[1] if ":" in name else ""
+    if (entry or {}).get("remote_host") or (entry or {}).get("remote_model") or re.search(r"(^|-)cloud($|-)", tag):
+        return "cloud model: runs on Ollama's servers, not your GPU"
+    caps = (entry or {}).get("capabilities")
+    if caps is not None and "completion" not in caps:
+        return f"can't answer prompts ({', '.join(caps) or 'no capabilities'}, e.g. an embedding model)"
+    return None
+
+
+def ollama_entry(name: str) -> dict | None:
+    low = name.lower()
+    return next((m for m in list_ollama_models() if m["name"].lower() in (low, f"{low}:latest")), None)
+
+
 def list_ollama_models() -> list[dict]:
     try:
         return requests.get(f"{OLLAMA_URL}/api/tags", timeout=10).json().get("models", [])
