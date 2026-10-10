@@ -11,18 +11,33 @@ REV = "refs/convert/parquet"
 _cache: dict[tuple, list[dict]] = {}
 
 
+def _cached_shards(repo: str, config: str, split: str) -> list[str]:
+    from huggingface_hub import hf_hub_download
+    paths = []
+    for i in range(1000):  # shards are named 0000.parquet, 0001.parquet, ...
+        try:
+            paths.append(hf_hub_download(repo, f"{config}/{split}/{i:04d}.parquet", repo_type="dataset",
+                                         revision=REV, local_files_only=True))
+        except Exception:
+            break
+    return paths
+
+
 def rows(repo: str, config: str, split: str) -> list[dict]:
     key = (repo, config, split)
     if key not in _cache:
         import pandas as pd
         from huggingface_hub import HfApi, hf_hub_download
 
-        files = sorted(f for f in HfApi().list_repo_files(repo, repo_type="dataset", revision=REV)
-                       if f.startswith(f"{config}/{split}/") and f.endswith(".parquet"))
-        if not files:
-            raise RuntimeError(f"no parquet files for {repo} [{config}/{split}]")
-        df = pd.concat([pd.read_parquet(hf_hub_download(repo, f, repo_type="dataset", revision=REV))
-                        for f in files])
+        try:
+            files = sorted(f for f in HfApi().list_repo_files(repo, repo_type="dataset", revision=REV)
+                           if f.startswith(f"{config}/{split}/") and f.endswith(".parquet"))
+            paths = [hf_hub_download(repo, f, repo_type="dataset", revision=REV) for f in files]
+        except Exception:
+            paths = _cached_shards(repo, config, split)  # offline / HF unreachable: use what's cached
+        if not paths:
+            raise RuntimeError(f"no parquet files for {repo} [{config}/{split}] (online or in cache)")
+        df = pd.concat([pd.read_parquet(p) for p in paths])
         recs = df.to_dict("records")
         for r in recs:  # numpy arrays -> lists so everything is JSON-friendly
             for k, v in r.items():
