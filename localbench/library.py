@@ -15,7 +15,7 @@ from datetime import datetime
 import requests
 
 from . import fit
-from .backends import OLLAMA_URL, list_ollama_models
+from .backends import OLLAMA_URL, ensure_ollama, list_ollama_models, ollama_up
 from .util import RESULTS
 
 STATE = RESULTS / "library_state.json"
@@ -163,8 +163,13 @@ def pull(tag: str, log=print) -> None:
         last_status = st
 
 
-def delete(tag: str) -> None:
-    requests.delete(f"{OLLAMA_URL}/api/delete", json={"model": tag}, timeout=60)
+def delete(tag: str, log=print) -> bool:
+    try:
+        requests.delete(f"{OLLAMA_URL}/api/delete", json={"model": tag}, timeout=60).raise_for_status()
+        return True
+    except requests.RequestException as e:
+        log(f"  could not delete {tag} yet ({e.__class__.__name__}); will retry on the next run")
+        return False
 
 
 def models_dir_free_gb() -> float:
@@ -197,7 +202,13 @@ def run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, lo
 
 
 def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, log=print):
+    if not ensure_ollama(log=log):
+        log("Ollama isn't running. Start it and run this again.")
+        return
     st = load_state()
+    for tag in st.get("to_delete", []):  # cleanups that failed last time (server was down)
+        if delete(tag, log):
+            st["to_delete"].remove(tag)
     local = list_ollama_models()
     installed = {m["name"] for m in local}
     by_digest = {m.get("digest", "")[:12]: m["name"] for m in local}  # same weights under another tag
@@ -272,14 +283,23 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
             save_state(st)
             raise
         except Exception as e:
-            rec.update(status="failed", reason=str(e)[:300])
-            log(f"  FAILED: {e}")
+            if not ollama_up():  # the server died: not this model's fault, keep it queued
+                rec.update(status="pending", reason="Ollama stopped during the test")
+                log("  Ollama stopped - this model stays queued.")
+            else:
+                rec.update(status="failed", reason=str(e)[:300])
+                log(f"  FAILED: {e}")
         finally:
             if not had_it and "*" not in keep:
-                delete(tag)
-                log("  deleted (wasn't one of your models)")
+                if delete(tag, log):
+                    log("  deleted (wasn't one of your models)")
+                elif tag not in st.setdefault("to_delete", []):
+                    st["to_delete"].append(tag)
             save_state(st)
             rebuild_fn()
+        if rec.get("status") == "pending" and not ensure_ollama(log=log):
+            log("Ollama could not be restarted - stopping. Run again once it's up; progress is saved.")
+            break
         if a.publish and i % 5 == 0:
             publish_fn()
     if a.publish:

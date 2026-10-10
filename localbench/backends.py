@@ -194,6 +194,44 @@ class OllamaBackend(Backend):
             return {}
 
 
+class ServerDown(RuntimeError):
+    """Ollama stopped answering. Never a model failure: callers stop and keep the item pending."""
+
+
+def ollama_up() -> bool:
+    try:
+        return requests.get(f"{OLLAMA_URL}/api/version", timeout=3).ok
+    except requests.RequestException:
+        return False
+
+
+def ensure_ollama(wait_s: float = 90, log=print) -> bool:
+    """Make sure the Ollama server is running; start the desktop app (or `ollama serve`) if not."""
+    if ollama_up():
+        return True
+    import shutil
+    import subprocess
+    candidates = [os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama app.exe"),
+                  os.path.join(os.environ.get("ProgramFiles", ""), "Ollama", "ollama app.exe")]
+    app = next((c for c in candidates if os.path.exists(c)), None)
+    cmd = [app] if app else ([shutil.which("ollama"), "serve"] if shutil.which("ollama") else None)
+    if not cmd:
+        log("  Ollama is not running and could not be found to start it.")
+        return False
+    log("  Ollama is not running - starting it ...")
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen(cmd, creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, close_fds=True)  # detached: outlives this benchmark
+    t0 = time.time()
+    while time.time() - t0 < wait_s:
+        time.sleep(2)
+        if ollama_up():
+            log("  Ollama is back up.")
+            return True
+    log(f"  Ollama did not come up within {wait_s:.0f}s.")
+    return False
+
+
 def list_ollama_models() -> list[dict]:
     try:
         return requests.get(f"{OLLAMA_URL}/api/tags", timeout=10).json().get("models", [])

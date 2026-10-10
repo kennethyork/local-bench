@@ -6,7 +6,7 @@ import webbrowser
 from pathlib import Path
 
 from . import fit, perf, report
-from .backends import list_ollama_models, make_backend
+from .backends import ensure_ollama, list_ollama_models, make_backend
 from .categories import DEFAULT, registry, run_category
 from .governor import PROFILES, Governor, cap_status
 from .util import RESULTS, load_all, save, slug
@@ -203,6 +203,9 @@ def cmd_run(a):
     print(f"\nBenchmarking {len(todo)} model(s): {', '.join(todo) or 'nothing to do'}\n")
     for i, spec in enumerate(todo, 1):
         print(f"===== [{i}/{len(todo)}] {spec} =====")
+        if _label(spec).startswith("ollama:") and not ensure_ollama():
+            print("Ollama isn't running and couldn't be started - stopping. Progress is saved; run again.")
+            break
         ok = True
         if not a.no_speed:
             ok = _speed(spec, a)

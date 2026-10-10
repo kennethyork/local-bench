@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 
 from .. import gpu
-from ..backends import Backend
+from ..backends import Backend, ServerDown, ensure_ollama
 
 SEED = 1234
 
@@ -65,6 +65,26 @@ def registry() -> dict[str, Category]:
 DEFAULT = ["debugging", "codegen", "refactoring", "security", "hallucination", "ui", "reasoning"]
 
 
+def _generate_with_recovery(backend: Backend, messages, max_tokens, num_ctx, log):
+    """Generate; if the Ollama server died, restart it and retry once, else raise ServerDown."""
+    import requests
+    # refused/reset connections AND streams cut off mid-answer (server killed while generating)
+    dropped = (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError)
+    try:
+        return backend.generate(messages, max_tokens=max_tokens, temperature=0.0, num_ctx=num_ctx)
+    except dropped:
+        if backend.kind != "ollama":
+            raise
+        log("  lost connection to Ollama - waiting for it to come back, then retrying this item")
+        time.sleep(3)  # the Ollama tray app usually restarts its server by itself
+        if not ensure_ollama(log=log):
+            raise ServerDown("Ollama stopped and could not be restarted")
+        try:
+            return backend.generate(messages, max_tokens=max_tokens, temperature=0.0, num_ctx=num_ctx)
+        except dropped as e:
+            raise ServerDown(f"Ollama keeps dropping the connection: {e}") from e
+
+
 def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens: int | None = None,
                  log=print, on_record=None, governor=None, num_ctx: int | None = None) -> dict:
     items = cat.items(limit)
@@ -80,8 +100,10 @@ def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens:
                 governor.before_request()
             t_item = time.perf_counter()
             try:
-                r = backend.generate(it.messages, max_tokens=mt, temperature=0.0, num_ctx=num_ctx)
+                r = _generate_with_recovery(backend, it.messages, mt, num_ctx, log)
                 text, n_out, err, trunc = r.text, r.output_tokens, None, r.extra.get("done_reason") == "length"
+            except ServerDown:
+                raise  # abort: a dead server must never be scored as wrong answers
             except Exception as e:
                 text, n_out, err, trunc = "", 0, str(e)[:200], False
             item_s = time.perf_counter() - t_item
