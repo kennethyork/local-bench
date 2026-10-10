@@ -65,30 +65,76 @@ def needed_ctx(a, with_speed: bool) -> int:
     return ctx
 
 
+NEEDS: dict[str, float] = {}  # spec -> estimated VRAM need (MB), filled by fit_gate
+
+
 def fit_gate(specs: list[str], a, ctx: int) -> list[str]:
-    """Keep only models that fit this GPU (weights + KV at `ctx` + overhead within free VRAM)."""
-    budget = fit.budget_mb(a.vram_headroom)
-    keep, too_big = [], 0
-    print(f"GPU fit check at {ctx:,}-token context:")
+    """Keep the models COMPATIBLE with this GPU (weights + KV at `ctx` + overhead within what the card
+    can hold). Whether there's room right now is checked per model at run time (see room_now)."""
+    gpu_b, free_b = fit.gpu_budget_mb(a.vram_headroom), fit.free_budget_mb(a.vram_headroom)
+    keep, incompatible = [], 0
+    print(f"GPU compatibility at {ctx:,}-token context: this GPU holds up to {(gpu_b or 0) / 1024:.1f} GB "
+          f"per model ({(free_b or 0) / 1024:.1f} GB free right now):")
     for spec in benchmarkable(specs):
-        f = fit.estimate(_label(spec), ctx, budget)
+        f = fit.estimate(_label(spec), ctx, gpu_b)
         print("  " + f.line())
         if f.fits or a.force:
             keep.append((f.need_mb or 0, spec))
+            NEEDS[spec] = f.need_mb or 0
         else:
-            too_big += 1
-    if too_big:
-        print(f"Skipping {too_big} model(s) that don't fit. Use a smaller quant, lower --num-ctx, or --force.")
+            incompatible += 1
+    if incompatible:
+        print(f"Skipping {incompatible} model(s) too big for this GPU. "
+              "Use a smaller quant, lower --num-ctx, or --force.")
     return [spec for _, spec in sorted(keep)]  # smallest first: a partial run still covers the most models
 
 
+def room_now(spec: str, a) -> bool:
+    """Is there enough free VRAM for this compatible model right now (other apps considered)?"""
+    free_b = fit.free_budget_mb(a.vram_headroom)
+    return a.force or free_b is None or NEEDS.get(spec, 0) <= free_b
+
+
+def run_compatible(specs: list[str], a, run_one) -> None:
+    """Run each model when there's room; defer ones blocked by other apps' VRAM and retry them at the end."""
+    deferred = []
+    for i, spec in enumerate(specs, 1):
+        print(f"===== [{i}/{len(specs)}] {spec} =====")
+        if not room_now(spec, a):
+            print(f"  deferred: needs ~{NEEDS[spec] / 1024:.1f} GB, other apps hold {fit.other_apps_gb():.1f} GB "
+                  "of VRAM right now - will retry at the end")
+            deferred.append(spec)
+            continue
+        if run_one(spec) is False:
+            return
+    if deferred:
+        print(f"\nRetrying {len(deferred)} deferred model(s) ...")
+    still = []
+    for spec in deferred:
+        if room_now(spec, a):
+            print(f"===== [deferred] {spec} =====")
+            if run_one(spec) is False:
+                return
+        else:
+            still.append(spec)
+    if still:
+        print(f"\n{len(still)} compatible model(s) still waiting for VRAM: {', '.join(still)}.\n"
+              f"Other apps hold {fit.other_apps_gb():.1f} GB. Close them and run again; they'll be picked up then.")
+
+
 def cmd_models(a):
-    budget = fit.budget_mb(0.92)
-    print(f"Ollama models (fit at an 8,192-token context; free VRAM budget {(budget or 0) / 1024:.1f} GB):")
+    gpu_b, free_b = fit.gpu_budget_mb(0.92), fit.free_budget_mb(0.92)
+    print(f"Ollama models at an 8,192-token context. This GPU holds up to {(gpu_b or 0) / 1024:.1f} GB per model; "
+          f"{(free_b or 0) / 1024:.1f} GB is free right now:")
     for spec in default_models():
         name = ollama_name(spec)
         why = not_benchmarkable(name, ollama_entry(name))
-        print(f"  --  {spec:<44} skipped: {why}" if why else "  " + fit.estimate(spec, 8192, budget).line())
+        if why:
+            print(f"  --  {spec:<44} skipped: {why}")
+            continue
+        f = fit.estimate(spec, 8192, gpu_b)
+        wait = f.fits and f.need_mb and free_b and f.need_mb > free_b
+        print("  " + (f"WAIT{f.line()[3:]}  (compatible; close other apps to free VRAM)" if wait else f.line()))
     print("\nGovernor profiles (from Ocadox):")
     for name, p in PROFILES.items():
         print(f"  {name:<9} pace {p.tokens_per_second or 'off'} tok/s, ceiling {p.temperature_ceiling_c or 'none'}C, "
@@ -184,17 +230,19 @@ def cmd_run(a):
             print(f"Already benchmarked (use --redo to rerun): {', '.join(done)}")
         todo = [s for s in todo if s not in done]
     print(f"\nBenchmarking {len(todo)} model(s): {', '.join(todo) or 'nothing to do'}\n")
-    for i, spec in enumerate(todo, 1):
-        print(f"===== [{i}/{len(todo)}] {spec} =====")
-        if _label(spec).startswith("ollama:") and not ensure_ollama():
+
+    def run_one(spec):
+        if not ensure_ollama():
             print("Ollama isn't running and couldn't be started - stopping. Progress is saved; run again.")
-            break
+            return False
         ok = True
         if not a.no_speed:
             ok = _speed(spec, a)
         if cats and ok:
             _bench(spec, a, cats)
         report.build(kwh_price=a.kwh_price)  # refresh after each model so partial runs are viewable
+
+    run_compatible(todo, a, run_one)
     _report(a)
     if a.publish:
         cmd_publish(argparse.Namespace(out="docs", kwh_price=a.kwh_price, full_system=False,
@@ -221,8 +269,7 @@ def cmd_library(a):
 
 
 def cmd_speed(a):
-    for spec in fit_gate(a.models, a, needed_ctx(a, True)):
-        _speed(spec, a)
+    run_compatible(fit_gate(a.models, a, needed_ctx(a, True)), a, lambda spec: _speed(spec, a) and None)
     _report(a)
 
 

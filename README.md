@@ -6,15 +6,15 @@ Unlike BridgeBench's editorial ratings, every score here is measured automatical
 
 ## Quick start
 
-**Double-click `bench-all.bat`.** It benchmarks your installed Ollama models first, then works through the whole Ollama library. Everything is limited to what fits your GPU and runs smallest first, and the GitHub Pages copy is refreshed as it goes. Models that already have results are skipped, so you can stop it at any time and run it again to continue.
+**Double-click `bench-all.bat`.** It benchmarks every local model on [ollama.com](https://ollama.com/library) that's compatible with your GPU, smallest first, and refreshes the GitHub Pages copy as it goes. Models you already have are reused, not downloaded again. Models with results are skipped, so you can stop at any time and run it again to continue.
 
 | Command | What it does |
 |---|---|
-| `bench-all.bat` | your models, then the whole library |
-| `bench-all.bat mine` | only your installed models |
-| `bench-all.bat library` | only the Ollama library |
+| `bench-all.bat` | the ollama.com library (the default) |
+| `bench-all.bat mine` | only models you've installed, e.g. custom ones that aren't on ollama.com |
+| `bench-all.bat both` | your installed models, then the library |
 
-Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat mine --redo`. Library-only options (`--dry-run`, `--family`, `--max-models`, `--keep`, `--retry-failed`, `--refresh`) need the `library` mode, e.g. `bench-all.bat library --dry-run`.
+Options pass through, e.g. `bench-all.bat --governor balanced`, `bench-all.bat --dry-run` or `bench-all.bat --family qwen3,gemma3`.
 
 ```powershell
 .\.venv\Scripts\python -m localbench models                       # models (with GPU fit), governor, categories
@@ -31,9 +31,10 @@ Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat
 
 ## The whole Ollama library
 
-`bench-all.bat` (or `bench-all.bat library`) benchmarks every model in the [Ollama library](https://ollama.com/library) that fits your GPU.
+`bench-all.bat` benchmarks every model in the [Ollama library](https://ollama.com/library) that's compatible with your GPU.
 
-- **What's included:** every size at its default quantization. Duplicate tags, base/text variants, MLX (Apple-only) builds, cloud tags, embedding models and context-length variants are left out. On a 24 GB card that's about 377 models and 2.5 TB of downloads.
+- **What's included:** every local size at its default quantization that your card can hold. Duplicate tags, base/text variants, MLX (Apple-only) builds, cloud models, embedding models and context-length variants are left out. On a 24 GB card that's about 381 models and 2.6 TB of downloads.
+- **Compatible, not just "free right now":** whether a model is included depends on your GPU's total VRAM, not on what other apps happen to be using. If other apps are in the way when a model's turn comes, it's **deferred**, not dropped. It's retried at the end of the run, and again on the next run.
 - **One model at a time:** each model is pulled, fit-checked, benchmarked, then **deleted**, so only one is on disk at a time. Models you already had are never deleted; tags with the same weights as one of yours reuse your copy and its results. `--keep` keeps everything instead.
 - **Resumable:** close the window whenever you like. Progress is saved in `results/library_state.json` and the next launch continues from there. `--retry-failed` retries models that failed.
 - **Sleep and publishing:** the PC is kept awake while it runs, and `docs/` is refreshed every 5 models.
@@ -41,7 +42,7 @@ Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat
 
 ## Protecting the GPU
 
-- **Fit check.** Each model's weights, plus its KV cache at the context actually used (`--num-ctx`, default 8,192), plus overhead must fit in free VRAM (92% of total, minus what other apps hold). Models that don't fit are skipped. If Ollama spills any of a model onto the CPU after loading, the run stops. `--force` overrides the check.
+- **Fit check.** Each model's weights, plus its KV cache at the context actually used (`--num-ctx`, default 8,192), plus overhead must fit the card (92% of total VRAM, minus a 1 GB desktop reserve). Models that don't fit are skipped. Right before each model runs, free VRAM is checked too; if other apps are in the way, the model waits until the end of the run. If Ollama still spills any of a model onto the CPU after loading, that model stops. `--force` overrides the checks.
 - **Governor** (ported from Ocadox; `-g silent|balanced|turbo`, **silent by default**). It paces output with idle gaps between requests and backs off near the profile's temperature ceiling. The GPU power cap only works from an **administrator** terminal; otherwise it's logged as unavailable.
 - **Hard stop at `--max-temp` (80 °C)** in every profile. At the limit the run pauses until the card cools by 10 °C. If it doesn't cool within 3 minutes, that model stops and its finished categories are kept.
 

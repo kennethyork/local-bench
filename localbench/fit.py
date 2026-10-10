@@ -1,8 +1,12 @@
 """Only benchmark what this GPU can actually hold.
 
-Estimate = weights + KV cache at the context we will really use + runtime overhead, compared
-against free VRAM (total x headroom, minus what other apps already use). After loading, Ollama's
-own /api/ps is checked too: any CPU spill means the model doesn't fit and the run is skipped.
+Estimate = weights + KV cache at the context we will really use + runtime overhead.
+Two budgets:
+  * gpu_budget_mb  - what the card can hold (total VRAM x headroom, minus a desktop reserve).
+                     Decides whether a model is COMPATIBLE, i.e. part of the benchmark at all.
+  * free_budget_mb - what's free right now (other apps subtracted). Decides only WHEN a
+                     compatible model runs: if other apps are in the way it's deferred, not dropped.
+After loading, Ollama's own /api/ps is checked too: any CPU spill stops that model.
 """
 from __future__ import annotations
 
@@ -40,12 +44,29 @@ class Fit:
                 + (f"  {self.note}" if self.note else ""))
 
 
-def budget_mb(headroom: float = 0.92) -> float | None:
+DESKTOP_RESERVE_MB = 1024  # Windows desktop + driver; always in use on a display GPU
+
+
+def gpu_budget_mb(headroom: float = 0.92) -> float | None:
+    """What this card can hold for a model, regardless of what other apps happen to use now."""
     info = gpu.gpu_info()
     if not info:
         return None
-    other = gpu.used_mb()  # desktop, browser, other apps (call with no models loaded for accuracy)
+    return info["vram_total_mb"] * headroom - DESKTOP_RESERVE_MB
+
+
+def free_budget_mb(headroom: float = 0.92) -> float | None:
+    """What a model can use right now (other apps' VRAM subtracted)."""
+    info = gpu.gpu_info()
+    if not info:
+        return None
+    other = max(gpu.used_mb(), DESKTOP_RESERVE_MB)  # desktop, browser, other apps
     return info["vram_total_mb"] * headroom - other
+
+
+def other_apps_gb() -> float:
+    """VRAM held by things other than the desktop reserve (apps worth closing)."""
+    return max(gpu.used_mb() - DESKTOP_RESERVE_MB, 0) / 1024
 
 
 def _kv_mb(layers, kv_heads, head_dim_k, head_dim_v, ctx, bytes_per=2) -> float:

@@ -197,8 +197,8 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         save_state(st)
     keep = set(st["preinstalled"]) | ({"*"} if a.keep else set())
 
-    budget = fit.budget_mb(a.vram_headroom)
-    queue = build_queue(st, budget or 0, a.refresh, [f.strip() for f in a.family.split(",")] if a.family else None, log)
+    gpu_b = fit.gpu_budget_mb(a.vram_headroom)  # what the card can hold -> decides COMPATIBLE
+    queue = build_queue(st, gpu_b or 0, a.refresh, [f.strip() for f in a.family.split(",")] if a.family else None, log)
     for rec in st["models"].values():  # older state files saved "too big" as a permanent skip
         if rec.get("status") == "skipped" and ("GPU budget" in rec.get("reason", "") or "VRAM" in rec.get("reason", "")):
             rec["status"] = "too_big"
@@ -206,50 +206,58 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
     def wanted(t):
         rec = st["models"].get(t["tag"], {})
         status = rec.get("status")
-        if status == "too_big":  # "too big" depends on free VRAM right now, so it's rechecked every run
-            return not rec.get("need_mb") or rec["need_mb"] <= (budget or 0)
-        return status in (None, "pending") or (status == "failed" and a.retry_failed)
+        if status == "too_big":  # measured after download; only retried if the card could hold it after all
+            return not rec.get("need_mb") or rec["need_mb"] <= (gpu_b or 0)
+        return status in (None, "pending", "deferred") or (status == "failed" and a.retry_failed)
 
     todo = [t for t in queue if wanted(t)]
-    fits = [t for t in todo if t["prefits"]]
-    too_big = len(todo) - len(fits) + sum(1 for t in queue if not wanted(t)
-                                         and st["models"].get(t["tag"], {}).get("status") == "too_big")
+    compatible = [t for t in todo if t["prefits"]]
+    incompatible = sum(1 for t in queue if not t["prefits"]) + sum(
+        1 for t in queue if t["prefits"] and st["models"].get(t["tag"], {}).get("status") == "too_big" and not wanted(t))
     save_state(st)
 
     counts = {}
     for v in st["models"].values():
         counts[v["status"]] = counts.get(v["status"], 0) + 1
-    total_gb = sum(t["size_gb"] or 0 for t in fits)
-    log(f"\nLibrary: {len(st['catalog'])} chat families, {len(queue)} model sizes. "
-        f"Already: {counts.get('done', 0)} done, {counts.get('skipped', 0)} skipped (can't run locally), "
+    total_gb = sum(t["size_gb"] or 0 for t in compatible)
+    log(f"\nOllama library: {len(st['catalog'])} chat families, {len(queue)} local model sizes. "
+        f"This GPU holds up to {(gpu_b or 0) / 1024:.1f} GB per model, so {incompatible} are too big for it.")
+    log(f"Already: {counts.get('done', 0)} done, {counts.get('skipped', 0)} skipped (can't run locally), "
         f"{counts.get('failed', 0)} failed.")
-    log(f"Too big for the {(budget or 0) / 1024:.1f} GB of free VRAM right now: {too_big} "
-        "(rechecked every run, so freeing VRAM brings them back).")
-    log(f"To do: {len(fits)} models that fit, {total_gb:,.0f} GB to download in total "
+    log(f"To do: {len(compatible)} compatible models, {total_gb:,.0f} GB to download in total "
         f"({'kept' if a.keep else 'deleted after each test, so only one at a time on disk'}).")
     if a.max_models:
-        fits = fits[: a.max_models]
+        compatible = compatible[: a.max_models]
     if a.dry_run:
-        for t in fits:
+        for t in compatible:
             log(f"  {t['tag']:<48} {t['size_gb']:>6.1f} GB  {t['inputs']}")
         return
 
-    for i, t in enumerate(fits, 1):
+    def room_now(need_mb: float) -> bool:
+        free_b = fit.free_budget_mb(a.vram_headroom)
+        return free_b is None or need_mb <= free_b
+
+    def process(t, header: str) -> str:
+        """Pull -> check -> benchmark -> clean up one model. Returns its final status."""
         tag = by_digest.get(t["digest"], t["tag"])  # reuse your copy (and its results) if you have it
         label = f"ollama:{tag}"
-        log(f"\n===== library [{i}/{len(fits)}] {t['tag']} ({t['size_gb']} GB)"
-            + (f" = your {tag}" if tag != t["tag"] else "") + " =====")
+        log(f"\n===== {header} {t['tag']} ({t['size_gb']} GB)" + (f" = your {tag}" if tag != t["tag"] else "") + " =====")
         rec = st["models"].setdefault(t["tag"], {})
         rec.update({"size_gb": t["size_gb"], "started": datetime.now().isoformat(timespec="seconds"), "ran_as": tag})
         had_it = tag in installed or tag in keep
+        if done_fn(label) and not a.redo:
+            rec.update(status="done", reason="results already saved")
+            save_state(st)
+            return "done"
+        est = (t["size_gb"] or 0) * 953.7 + 1500
+        if not room_now(est):  # compatible, but other apps hold the VRAM right now: don't even download yet
+            rec.update(status="deferred", reason=f"other apps held {fit.other_apps_gb():.1f} GB of VRAM")
+            log(f"  deferred: other apps hold {fit.other_apps_gb():.1f} GB of VRAM right now - will retry at the end")
+            save_state(st)
+            return "deferred"
         try:
-            if done_fn(label) and not a.redo:
-                rec.update(status="done", reason="results already saved")
-                save_state(st)
-                continue
             if not had_it:
-                need = (t["size_gb"] or 0) + 5
-                if models_dir_free_gb() < need:
+                if models_dir_free_gb() < (t["size_gb"] or 0) + 5:
                     raise RuntimeError(f"not enough disk space for {t['size_gb']} GB (keeping 5 GB spare)")
                 log("  pulling ...")
                 pull(tag, log)
@@ -257,13 +265,16 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
             if why:
                 rec.update(status="skipped", reason=why)
                 log(f"  skip: {why}")
-                continue
-            f = fit.estimate(label, a.need_ctx, budget)
+                return "skipped"
+            f = fit.estimate(label, a.need_ctx, gpu_b)
             log("  " + f.line())
-            if not f.fits:
-                # remember the measured need, so it's only re-downloaded once enough VRAM is free
+            if not f.fits:  # measured need beats the download-size estimate: too big for this card
                 rec.update(status="too_big", need_mb=f.need_mb, reason=f"needs ~{f.need_mb / 1024:.1f} GB VRAM")
-                continue
+                return "too_big"
+            if not room_now(f.need_mb or 0):
+                rec.update(status="deferred", reason=f"other apps held {fit.other_apps_gb():.1f} GB of VRAM")
+                log(f"  deferred: needs ~{f.need_mb / 1024:.1f} GB, other apps hold {fit.other_apps_gb():.1f} GB")
+                return "deferred"
             ok = speed_fn(label) if not a.no_speed else True
             if not ok:
                 raise RuntimeError("speed test failed (see log above)")
@@ -290,11 +301,24 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
                     st["to_delete"].append(tag)
             save_state(st)
             rebuild_fn()
-        if rec.get("status") == "pending" and not ensure_ollama(log=log):
+        return rec.get("status")
+
+    deferred = []
+    for i, t in enumerate(compatible, 1):
+        status = process(t, f"library [{i}/{len(compatible)}]")
+        if status == "deferred":
+            deferred.append(t)
+        elif status == "pending" and not ensure_ollama(log=log):
             log("Ollama could not be restarted - stopping. Run again once it's up; progress is saved.")
-            break
+            return
         if a.publish and i % 5 == 0:
             publish_fn()
+    if deferred:
+        log(f"\nRetrying {len(deferred)} model(s) deferred for VRAM ...")
+        still = [t for t in deferred if process(t, "deferred") == "deferred"]
+        if still:
+            log(f"\n{len(still)} compatible model(s) are still waiting for VRAM: other apps hold "
+                f"{fit.other_apps_gb():.1f} GB. Close them and run again; these will be picked up then.")
     if a.publish:
         publish_fn()
     log("\nLibrary run finished.")
