@@ -6,7 +6,15 @@ Unlike BridgeBench's editorial ratings, every score here is measured automatical
 
 ## Quick start
 
-**Double-click `bench-all.bat`.** It benchmarks every local model that fits your GPU, smallest first, and then refreshes the GitHub Pages copy. Models that already have results are skipped, so running it again only picks up models you've added since. Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat --redo`.
+**Double-click `bench-all.bat`.** It benchmarks your installed models (Ollama plus your Hugging Face cache) first, then works through the whole Ollama library. Everything is limited to what fits your GPU and runs smallest first, and the GitHub Pages copy is refreshed as it goes. Models that already have results are skipped, so you can stop it at any time and run it again to continue.
+
+| Command | What it does |
+|---|---|
+| `bench-all.bat` | your models, then the whole library |
+| `bench-all.bat mine` | only your installed models |
+| `bench-all.bat library` | only the Ollama library |
+
+Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat mine --redo`. Library-only options (`--dry-run`, `--family`, `--max-models`, `--keep`, `--retry-failed`, `--refresh`) need the `library` mode, e.g. `bench-all.bat library --dry-run`.
 
 ```powershell
 .\.venv\Scripts\python -m localbench models                       # models (with GPU fit), governor, categories
@@ -23,7 +31,7 @@ Unlike BridgeBench's editorial ratings, every score here is measured automatical
 
 ## The whole Ollama library
 
-**Double-click `bench-library.bat`** to benchmark every model in the [Ollama library](https://ollama.com/library) that fits your GPU.
+`bench-all.bat` (or `bench-all.bat library`) benchmarks every model in the [Ollama library](https://ollama.com/library) that fits your GPU.
 
 - **What's included:** every size at its default quantization. Duplicate tags, base/text variants, MLX (Apple-only) builds, cloud tags, embedding models and context-length variants are left out. On a 24 GB card that's about 377 models and 2.5 TB of downloads.
 - **One model at a time:** each model is pulled, fit-checked, benchmarked, then **deleted**, so only one is on disk at a time. Models you already had are never deleted; tags with the same weights as one of yours reuse your copy and its results. `--keep` keeps everything instead.
