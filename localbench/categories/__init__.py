@@ -107,8 +107,6 @@ def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens:
             except Exception as e:
                 text, n_out, err, trunc = "", 0, str(e)[:200], False
             item_s = time.perf_counter() - t_item
-            if governor:
-                governor.after_request(n_out)
             g = cat.grade(it, text) if not err else Grade(0.0, f"generation error: {err}")
             out_tokens += n_out
             total_score += g.score
@@ -118,8 +116,13 @@ def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens:
             records.append(rec)
             if on_record:
                 on_record(it, text, rec)
-            if i % 5 == 0 or i == len(items):
-                log(f"  {cat.name:<13} {i:>4}/{len(items)}  score {100 * total_score / i:5.1f}")
+            # one line per question, so slow or paced runs never look frozen
+            log(f"  {cat.name:<13} {i:>4}/{len(items)}  score {100 * total_score / i:5.1f}  "
+                f"({n_out} tok in {item_s:.1f}s)")
+            if governor:
+                governor.after_request(n_out, item_s, on_rest=lambda sec: log(
+                    f"                     resting {sec:.0f}s ({governor.name} governor: GPU "
+                    f"{gpu.temperature_c()}C / {gpu.power_w() or 0:.0f} W)"))
     elapsed = time.perf_counter() - t0
     n = len(items)
     mean = total_score / n if n else 0.0

@@ -47,10 +47,11 @@ class PowerBudget:
 @dataclass(frozen=True)
 class ProfileSpec:
     name: str
-    tokens_per_second: float | None  # None = no pacing (turbo)
+    tokens_per_second: float | None  # None = no fixed-rate pacing
     temperature_ceiling_c: int | None
     keep_alive_secs: int | None
     power_budget: PowerBudget | None
+    adaptive: bool = False  # full speed; rest only in proportion to thermal/power pressure
 
     @property
     def gpu_power_cap_watts(self) -> float | None:
@@ -58,10 +59,22 @@ class ProfileSpec:
 
 
 PROFILES = {
+    # LocalBench default: full speed while cool, backs off only under heat/power pressure
+    "adaptive": ProfileSpec("adaptive", None, 75, 300, PowerBudget(450.0, 150.0), adaptive=True),
+    # the Ocadox presets, unchanged
     "silent": ProfileSpec("silent", 18.0, 65, 120, PowerBudget(300.0, 150.0)),
     "balanced": ProfileSpec("balanced", 45.0, 75, 300, PowerBudget(450.0, 150.0)),
     "turbo": ProfileSpec("turbo", None, None, 600, None),
 }
+DEFAULT_PROFILE = "adaptive"
+
+
+def rest_for_load(work_s: float, load: float) -> float:
+    """Adaptive duty cycle: after `work_s` seconds of generation at permitted `load` (0..1],
+    rest so that work / (work + rest) == load. Full load -> no rest; 0.5 -> rest as long as it worked."""
+    if load >= 1.0 or work_s <= 0:
+        return 0.0
+    return work_s * (1.0 / max(load, FLOOR) - 1.0)
 
 
 def load_for_temperature(current_c: int, ceiling_c: int) -> float:
@@ -262,17 +275,25 @@ class Governor:
             t, _ = self._observe()
         self.cooldown_s += time.perf_counter() - t0
 
-    def after_request(self, output_tokens: int):
-        """Duty-cycle pacing: idle until cumulative throughput is back inside the budget."""
+    def after_request(self, output_tokens: int, work_s: float = 0.0, on_rest=None) -> float:
+        """Duty-cycle pacing after a request. Fixed-rate profiles idle until cumulative throughput is
+        back inside their budget; adaptive rests only in proportion to thermal/power pressure.
+        Calls on_rest(seconds) before a noticeable pause so the console doesn't look frozen."""
         self._observe()
         if not self.pace:
-            return
-        delay = self.pacer.delay_after_tokens(output_tokens)
+            return 0.0
+        if self.spec.adaptive:
+            delay = rest_for_load(work_s, self.pacer.load())
+        else:
+            delay = self.pacer.delay_after_tokens(output_tokens)
         if delay > 0:
             if self.pacer.load() < 1.0:
                 self.throttle_events += 1
+            if on_rest and delay >= 2:
+                on_rest(delay)
             time.sleep(delay)
             self.paced_s += delay
+        return delay
 
     def summary(self) -> dict:
         return {"profile": self.spec.name, "target_tps": self.spec.tokens_per_second,

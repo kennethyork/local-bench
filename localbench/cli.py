@@ -8,7 +8,7 @@ from pathlib import Path
 from . import fit, perf, report
 from .backends import ensure_ollama, list_ollama_models, make_backend, not_benchmarkable, ollama_entry, ollama_name
 from .categories import DEFAULT, registry, run_category
-from .governor import PROFILES, Governor, cap_status
+from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status
 from .util import RESULTS, load_all, save, slug
 
 
@@ -135,9 +135,11 @@ def cmd_models(a):
         f = fit.estimate(spec, 8192, gpu_b)
         wait = f.fits and f.need_mb and free_b and f.need_mb > free_b
         print("  " + (f"WAIT{f.line()[3:]}  (compatible; close other apps to free VRAM)" if wait else f.line()))
-    print("\nGovernor profiles (from Ocadox):")
+    print("\nGovernor profiles (adaptive is the default; the rest are the Ocadox presets):")
     for name, p in PROFILES.items():
-        print(f"  {name:<9} pace {p.tokens_per_second or 'off'} tok/s, ceiling {p.temperature_ceiling_c or 'none'}C, "
+        pace = "full speed, rests only under heat/power pressure" if p.adaptive else \
+            f"pace {p.tokens_per_second or 'off'} tok/s"
+        print(f"  {name:<9} {pace}, ceiling {p.temperature_ceiling_c or 'none'}C, "
               f"GPU cap {p.gpu_power_cap_watts or 'none'} W")
     st = cap_status()
     print(f"  power cap settable from this shell: {st.get('can_set')} (needs an administrator terminal)")
@@ -342,8 +344,9 @@ def main(argv=None):
         sp.add_argument("--think", action="store_true", help="enable reasoning/thinking mode where supported")
         sp.add_argument("--kwh-price", type=float, default=0.15, help="electricity price for cost-per-win (USD/kWh)")
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
-        sp.add_argument("-g", "--governor", choices=list(PROFILES), default="silent",
-                        help="Ocadox quiet-mode profile: silent (default) | balanced | turbo (unthrottled). "
+        sp.add_argument("-g", "--governor", choices=list(PROFILES), default=DEFAULT_PROFILE,
+                        help="adaptive (default: full speed, backs off only when the GPU runs hot or over its "
+                             "power budget) | silent | balanced | turbo (the Ocadox presets). "
                              "Power caps need an administrator terminal.")
         sp.add_argument("--max-temp", type=int, default=80,
                         help="hard GPU temperature stop in C, applies to every profile (pause, then abort)")
@@ -399,7 +402,7 @@ def main(argv=None):
 
     sp = sub.add_parser("governor", help="compare quiet-mode profiles on a sustained workload")
     common(sp)
-    sp.add_argument("--profiles", default="silent,balanced,turbo")
+    sp.add_argument("--profiles", default="adaptive,silent,balanced,turbo")
     sp.add_argument("--requests", type=int, default=8, help="back-to-back requests per profile")
     sp.add_argument("--gen", type=int, default=256, help="tokens per request")
     sp.add_argument("--prompt", type=int, default=1024, help="approx prompt tokens per request")

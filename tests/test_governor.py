@@ -122,5 +122,35 @@ class Pacing(unittest.TestCase):
         self.assertIsNone(p.effective_rate())
 
 
+class Adaptive(unittest.TestCase):
+    """LocalBench's own profile: full speed while cool, duty-cycles only under pressure."""
+
+    def test_full_speed_while_cool(self):
+        from localbench.governor import rest_for_load
+        p = Pacer(PROFILES["adaptive"])
+        p.observe_temperature(55)
+        p.observe_power(200.0)
+        self.assertEqual(p.load(), 1.0)
+        self.assertEqual(rest_for_load(2.5, p.load()), 0.0)
+
+    def test_rest_matches_the_permitted_duty_cycle(self):
+        from localbench.governor import rest_for_load
+        self.assertAlmostEqual(rest_for_load(2.0, 0.5), 2.0)    # 50% -> rest as long as it worked
+        self.assertAlmostEqual(rest_for_load(3.0, 0.75), 1.0)   # 75% duty
+        self.assertGreater(rest_for_load(1.0, 0.0), 0)          # floor: never a hang, never zero load
+
+    def test_backs_off_when_hot(self):
+        from localbench.governor import rest_for_load
+        p = Pacer(PROFILES["adaptive"])
+        p.observe_temperature(78)  # past its 75C ceiling
+        self.assertLess(p.load(), 0.5)
+        self.assertGreater(rest_for_load(2.0, p.load()), 2.0)
+
+    def test_is_the_default_and_never_fixed_rate(self):
+        from localbench.governor import DEFAULT_PROFILE
+        self.assertEqual(DEFAULT_PROFILE, "adaptive")
+        self.assertIsNone(PROFILES["adaptive"].tokens_per_second)
+
+
 if __name__ == "__main__":
     unittest.main()

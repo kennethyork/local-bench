@@ -38,12 +38,12 @@ Options pass through, e.g. `bench-all.bat --governor balanced`, `bench-all.bat -
 - **One model at a time:** each model is pulled, fit-checked, benchmarked, then **deleted**, so only one is on disk at a time. Models you already had are never deleted; tags with the same weights as one of yours reuse your copy and its results. `--keep` keeps everything instead.
 - **Resumable:** close the window whenever you like. Progress is saved in `results/library_state.json` and the next launch continues from there. `--retry-failed` retries models that failed.
 - **Sleep and publishing:** the PC is kept awake while it runs, and `docs/` is refreshed every 5 models.
-- **How long it takes:** about 9–10 days in Silent mode, 4–6 in Balanced (`--governor balanced`), 2–3 in Turbo, plus download time. Use `--dry-run` to see the plan, or `--family qwen3,gemma3` / `--max-models 20` to do a slice.
+- **How long it takes:** with the default adaptive governor it's limited mostly by each model's own speed and the download time, and it only slows when the GPU runs hot. Silent mode (`-g silent`) can stretch it to weeks. Use `--dry-run` to see the plan, or `--family qwen3,gemma3` / `--max-models 20` to do a slice.
 
 ## Protecting the GPU
 
 - **Fit check.** Each model's weights, plus its KV cache at the context actually used (`--num-ctx`, default 8,192), plus overhead must fit the card (92% of total VRAM, minus a 1 GB desktop reserve). Models that don't fit are skipped. Right before each model runs, free VRAM is checked too; if other apps are in the way, the model waits until the end of the run. If Ollama still spills any of a model onto the CPU after loading, that model stops. `--force` overrides the checks.
-- **Governor** (ported from Ocadox; `-g silent|balanced|turbo`, **silent by default**). It paces output with idle gaps between requests and backs off near the profile's temperature ceiling. The GPU power cap only works from an **administrator** terminal; otherwise it's logged as unavailable.
+- **Governor** (ported from Ocadox). **`adaptive` is the default:** full speed while the GPU is cool and within its power budget. From 70 °C it rests between questions in proportion to the pressure, using Ocadox's thermal/power maths, and harder past 75 °C. Ocadox's fixed-rate presets are still there: `-g silent` (18 tok/s, very quiet but very slow for benchmarking), `-g balanced` (45 tok/s) and `-g turbo` (no pacing). Every pause is printed, so a resting run never looks frozen. The GPU power cap only works from an **administrator** terminal; otherwise it's logged as unavailable.
 - **Hard stop at `--max-temp` (80 °C)** in every profile. At the limit the run pauses until the card cools by 10 °C. If it doesn't cool within 3 minutes, that model stops and its finished categories are kept.
 
 ## GitHub Pages

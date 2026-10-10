@@ -151,7 +151,7 @@ def run_sustained(backend: Backend, profile: str, requests: int = 8, gen_tokens:
             r = backend.generate(build_prompt(prompt_tokens, random.randint(1, 10**9)), max_tokens=gen_tokens,
                                  num_ctx=prompt_tokens + gen_tokens + 512, seed=i)
             out += r.output_tokens
-            gov.after_request(r.output_tokens)
+            gov.after_request(r.output_tokens, r.total_s)
         wall = time.perf_counter() - t0
     energy = (s.avg_power_w or 0) * wall
     res = {"profile": profile, "requests": requests, "output_tokens": out, "wall_s": wall,
