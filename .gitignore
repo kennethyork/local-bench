@@ -5,3 +5,6 @@ __pycache__/
 
 # raw benchmark output (full system info + every response); docs/ holds the public copy
 results/
+
+# local dev preview config
+.claude/

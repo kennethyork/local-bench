@@ -7,7 +7,7 @@ from itertools import combinations, permutations
 from pathlib import Path
 
 from .categories import DEFAULT, registry
-from .util import RESULTS, load_all
+from .util import RESULTS, load_all, slug
 
 
 def _slim(rec: dict, keep_html: bool) -> dict:
@@ -104,14 +104,35 @@ def sanitize(data: dict, full_system: bool = False, responses: bool = True, gall
     return data
 
 
+def _js(obj) -> str:
+    return json.dumps(obj, separators=(",", ":")).replace("</", "<\\/")
+
+
 def build(out: Path | None = None, kwh_price: float = 0.15, public: bool = False, full_system: bool = False,
           responses: bool = True, gallery: bool = True) -> Path:
+    """Write the dashboard. The page itself only carries summaries; each model's answers and generated
+    UI pages go to models/<model>.js next to it and load when someone opens that model or the gallery
+    (plain <script> files, so it works from disk and on GitHub Pages alike)."""
     out = out or RESULTS / "report.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     data = collect(kwh_price)
     if public:
         data = sanitize(data, full_system, responses, gallery)
-    out.write_text(TEMPLATE.replace("/*__DATA__*/null", json.dumps(data).replace("</", "<\\/")), encoding="utf-8")
+
+    detail_dir = out.parent / "models"
+    detail_dir.mkdir(exist_ok=True)
+    written, files = set(), {}
+    for m, cats in data["cats"].items():
+        fname = f"{slug(m)}.js"
+        detail = {c: v.pop("records") for c, v in cats.items()}
+        (detail_dir / fname).write_text(f"LB_DETAIL({_js(m)},{_js(detail)});\n", encoding="utf-8")
+        written.add(fname)
+        files[m] = f"models/{fname}"
+    for stale in detail_dir.glob("*.js"):  # models whose results were removed
+        if stale.name not in written:
+            stale.unlink()
+    data["files"] = files
+    out.write_text(TEMPLATE.replace("/*__DATA__*/null", _js(data)), encoding="utf-8")
     return out
 
 
