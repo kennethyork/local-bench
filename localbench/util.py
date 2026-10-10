@@ -27,11 +27,6 @@ def system_info() -> dict:
         info["ram_gb"] = round(psutil.virtual_memory().total / 2**30, 1)
     except Exception:
         pass
-    for mod in ("torch", "transformers"):
-        try:
-            info[mod] = __import__(mod).__version__
-        except Exception:
-            pass
     return info
 
 

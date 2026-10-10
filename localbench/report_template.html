@@ -101,7 +101,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
   <header class="top">
     <div>
       <h1>LocalBench</h1>
-      <p class="sub">A BridgeBench-style leaderboard for models running on this machine: Ollama and Hugging Face transformers.</p>
+      <p class="sub">A BridgeBench-style leaderboard for Ollama models running on this machine.</p>
       <p class="sys" id="sys"></p>
     </div>
     <button class="toggle" id="theme" aria-label="Toggle light/dark theme">Theme</button>
@@ -154,7 +154,7 @@ try { const t = localStorage.getItem("lb-theme"); if (t) document.documentElemen
 // ---- models: fixed alphabetical order, color follows the model (never its rank)
 const models = [...new Set([...Object.keys(DATA.perf), ...Object.keys(DATA.cats)])].sort();
 const color = m => { const i = models.indexOf(m); return i >= 0 && i < 8 ? `var(--s${i + 1})` : "var(--other)"; };
-const short = m => m.replace(/^ollama:/, "").replace(/^hf:/, "🤗 ");
+const short = m => m.replace(/^ollama:/, "");
 const fmt = (v, d = 1) => v == null || isNaN(v) ? "–" : Number(v).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d});
 const cat = (m, c) => (DATA.cats[m] || {})[c];
 const usedCats = DATA.order;
@@ -233,7 +233,7 @@ function lines(parent, title, hint, series, unit) {
 // ---- header
 const S = DATA.system || {};
 $("sys").textContent = [S.gpu && S.gpu.name && `${S.gpu.name} (${Math.round(S.gpu.vram_total_mb / 1024)} GB)`, S.ram_gb && `${S.ram_gb} GB RAM`,
-  S.ollama && `Ollama ${S.ollama}`, S.torch && `torch ${S.torch}`, S.transformers && `transformers ${S.transformers}`].filter(Boolean).join(" · ");
+  S.ollama && `Ollama ${S.ollama}`].filter(Boolean).join(" · ");
 $("kwh").textContent = "$" + DATA.kwh_price;
 
 // ---- leaderboard

@@ -6,42 +6,20 @@ import webbrowser
 from pathlib import Path
 
 from . import fit, perf, report
-from .backends import ensure_ollama, list_ollama_models, make_backend
+from .backends import ensure_ollama, list_ollama_models, make_backend, ollama_name
 from .categories import DEFAULT, registry, run_category
 from .governor import PROFILES, Governor, cap_status
 from .util import RESULTS, load_all, save, slug
 
 
 def default_models() -> list[str]:
-    """Every local LLM: installed Ollama models (de-duplicated by digest, e.g. qwen3.8:latest ==
-    qwen3.8:27b) plus text-generation models already in the Hugging Face cache."""
+    """Every installed Ollama model, de-duplicated by digest (e.g. qwen3.8:latest == qwen3.8:27b)."""
     seen, out = set(), []
     for m in sorted(list_ollama_models(), key=lambda m: m["name"].endswith(":latest")):
         if m.get("digest") not in seen:
             seen.add(m.get("digest"))
             out.append("ollama:" + m["name"])
-    return sorted(out) + hf_cached_llms()
-
-
-def hf_cached_llms() -> list[str]:
-    """Cached HF repos whose config says they generate text (skips embedders, tokenizers, datasets)."""
-    try:
-        import json
-
-        from huggingface_hub import scan_cache_dir
-        out = []
-        for repo in scan_cache_dir().repos:
-            if repo.repo_type != "model":
-                continue
-            cfgs = [f.file_path for rev in repo.revisions for f in rev.files if f.file_name == "config.json"]
-            if not cfgs:
-                continue
-            archs = json.loads(Path(cfgs[0]).read_text(encoding="utf-8")).get("architectures") or []
-            if any(a.endswith(("ForCausalLM", "ForConditionalGeneration")) for a in archs):
-                out.append(f"hf:{repo.repo_id}")
-        return sorted(out)
-    except Exception:
-        return []
+    return sorted(out)
 
 
 def already_done(label: str, cats: list[str], speed: bool, limit: int | None) -> bool:
@@ -60,8 +38,7 @@ def already_done(label: str, cats: list[str], speed: bool, limit: int | None) ->
 
 
 def _label(spec: str) -> str:
-    b = make_backend(spec)
-    return b.label
+    return "ollama:" + ollama_name(spec)
 
 
 def bench_ctx(a) -> int:
@@ -81,7 +58,7 @@ def fit_gate(specs: list[str], a, ctx: int) -> list[str]:
     keep = []
     print(f"GPU fit check at {ctx:,}-token context:")
     for spec in specs:
-        f = fit.estimate(_label(spec), ctx, budget, a.hf_dtype, a.hf_quant)
+        f = fit.estimate(_label(spec), ctx, budget)
         print("  " + f.line())
         if f.fits or a.force:
             keep.append((f.need_mb or 0, spec))
@@ -96,16 +73,6 @@ def cmd_models(a):
     print(f"Ollama models (fit at an 8,192-token context; free VRAM budget {(budget or 0) / 1024:.1f} GB):")
     for spec in default_models():
         print("  " + fit.estimate(spec, 8192, budget).line())
-    print("\nHugging Face cache:")
-    try:
-        from huggingface_hub import scan_cache_dir
-        for r in sorted(scan_cache_dir().repos, key=lambda r: r.repo_id):
-            if r.repo_type == "model":
-                print("  " + fit.estimate(f"hf:{r.repo_id}", 8192, budget).line())
-    except Exception as e:
-        print(f"  (could not scan: {e})")
-    print("\nAny HF repo works as hf:<org>/<repo> (downloaded on first use).")
-    print("GGUF repos can also run through Ollama: hf.co/<org>/<repo>:<quant>")
     print("\nGovernor profiles (from Ocadox):")
     for name, p in PROFILES.items():
         print(f"  {name:<9} pace {p.tokens_per_second or 'off'} tok/s, ceiling {p.temperature_ceiling_c or 'none'}C, "
@@ -119,7 +86,7 @@ def cmd_models(a):
 
 def _backend(spec, a, profile=None, num_ctx=None):
     ka = PROFILES[profile or a.governor].keep_alive_secs
-    return make_backend(spec, think=a.think, dtype=a.hf_dtype, quant=a.hf_quant,
+    return make_backend(spec, think=a.think,
                         keep_alive=f"{ka}s" if ka else "10m", num_ctx=num_ctx)
 
 
@@ -302,16 +269,14 @@ def _report(a):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="localbench",
-                                description="BridgeBench-style benchmarks for local LLMs (Ollama + Hugging Face).")
+                                description="BridgeBench-style benchmarks for local LLMs, run through Ollama.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def common(sp):
         sp.add_argument("-m", "--model", dest="models", action="append",
-                        help="ollama:<name> | hf:<org/repo> | hf.co/<org/repo-GGUF>. Repeatable. "
+                        help="Ollama model name, e.g. llama3.2:1b (an ollama: prefix is optional). Repeatable. "
                              "Default: every installed Ollama model that fits the GPU.")
         sp.add_argument("--think", action="store_true", help="enable reasoning/thinking mode where supported")
-        sp.add_argument("--hf-dtype", default="auto", help="transformers dtype: auto|bfloat16|float16|float32")
-        sp.add_argument("--hf-quant", choices=["4bit", "8bit"], help="bitsandbytes quantization for HF models")
         sp.add_argument("--kwh-price", type=float, default=0.15, help="electricity price for cost-per-win (USD/kWh)")
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
         sp.add_argument("-g", "--governor", choices=list(PROFILES), default="silent",

@@ -1,12 +1,12 @@
 # LocalBench
 
-A [BridgeBench](https://www.everydev.ai/tools/bridgebench)-style leaderboard for **local** models: anything served by **Ollama** or loaded with **Hugging Face transformers** on this machine.
+A [BridgeBench](https://www.everydev.ai/tools/bridgebench)-style leaderboard for **local** models. Every model runs through **Ollama**.
 
 Unlike BridgeBench's editorial ratings, every score here is measured automatically. Model-written code is executed against tests, verdicts are checked against ground truth, and the GPU's energy use is metered.
 
 ## Quick start
 
-**Double-click `bench-all.bat`.** It benchmarks your installed models (Ollama plus your Hugging Face cache) first, then works through the whole Ollama library. Everything is limited to what fits your GPU and runs smallest first, and the GitHub Pages copy is refreshed as it goes. Models that already have results are skipped, so you can stop it at any time and run it again to continue.
+**Double-click `bench-all.bat`.** It benchmarks your installed Ollama models first, then works through the whole Ollama library. Everything is limited to what fits your GPU and runs smallest first, and the GitHub Pages copy is refreshed as it goes. Models that already have results are skipped, so you can stop it at any time and run it again to continue.
 
 | Command | What it does |
 |---|---|
@@ -19,7 +19,7 @@ Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat
 ```powershell
 .\.venv\Scripts\python -m localbench models                       # models (with GPU fit), governor, categories
 .\.venv\Scripts\python -m localbench run --open                   # every local model that fits, all categories + speed
-.\.venv\Scripts\python -m localbench run -m ollama:llama3.2:1b -m hf:Qwen/Qwen2.5-1.5B-Instruct
+.\.venv\Scripts\python -m localbench run -m llama3.2:1b -m qwen3:4b
 .\.venv\Scripts\python -m localbench run -c security,hallucination --no-speed
 .\.venv\Scripts\python -m localbench speed                        # speed / VRAM only
 .\.venv\Scripts\python -m localbench governor -m llama3.2:1b      # silent vs balanced vs turbo
@@ -27,7 +27,7 @@ Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat
 .\.venv\Scripts\python -m localbench report --open                # rebuild results/report.html
 ```
 
-"Every local model" means every installed Ollama model (duplicate tags are counted once) plus any text-generation models already in your Hugging Face cache.
+"Every local model" means every installed Ollama model, with duplicate tags counted once. `-m` takes any Ollama model name; one that isn't installed yet is pulled first.
 
 ## The whole Ollama library
 
@@ -50,12 +50,6 @@ Options pass through, e.g. `bench-all.bat --governor balanced` or `bench-all.bat
 `localbench publish` (or `run --publish`) writes `docs/index.html` plus `.nojekyll`. Commit and push, then go to **Settings → Pages → Deploy from branch → `main` / `docs`**. The benchmark itself still runs on your PC; Pages only hosts the dashboard, and it's **public**.
 
 The published copy includes only the GPU name, VRAM and runtime versions. `--full-system` adds OS, CPU, RAM and driver details. `--no-responses` and `--no-gallery` leave out model outputs and generated UI pages.
-
-| Model spec | Runs on |
-|---|---|
-| `ollama:llama3.2:1b` (or just `llama3.2:1b`) | Ollama |
-| `hf.co/bartowski/Some-Model-GGUF:Q4_K_M` | Ollama, pulled straight from HF |
-| `hf:Qwen/Qwen2.5-1.5B-Instruct` (or `Qwen/...`) | transformers on the GPU (`--hf-quant 4bit` needs `bitsandbytes`) |
 
 ## Categories
 
@@ -81,5 +75,6 @@ Thinking models run with thinking **off** by default. `--think` turns it on and 
 ## Notes
 
 - Model-written code runs in a separate `python -I` process inside a temp dir, with a scrubbed environment and a 10 s timeout. That's isolation for convenience, **not a security sandbox**.
-- Ollama usually runs Q4 GGUF while transformers runs bf16, so cross-backend gaps partly reflect quantization.
+- Every model runs on the same engine (Ollama) at its default quantization, so differences come from the models, not the runtime. Models are downloaded from Ollama's registry.
+- The benchmark question sets (MBPP, HumanEvalFix, GSM8K, ARC, MMLU, TruthfulQA) are downloaded once from their public dataset pages and then read from the local cache. If those pages are unreachable, the cached copies are used.
 - Results go to `results/*.json` (every response is kept), generated UI pages to `results/ui/<model>/`, and the dashboard to `results/report.html`. The report is rebuilt after every model, so you can watch a long run fill in.

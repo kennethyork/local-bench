@@ -1,13 +1,8 @@
-# Install torch with CUDA first:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu128
-torch
-transformers
-accelerate
+# Every model runs through Ollama (install it from https://ollama.com).
+# These are only for the benchmark itself: HF datasets, GPU telemetry and HTTP.
 huggingface_hub
 pandas
 pyarrow
 requests
 nvidia-ml-py
 psutil
-# optional, for --hf-quant 4bit/8bit:
-# bitsandbytes

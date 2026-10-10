@@ -15,7 +15,7 @@ from datetime import datetime
 import requests
 
 from . import fit
-from .backends import OLLAMA_URL, ensure_ollama, list_ollama_models, ollama_up
+from .backends import OLLAMA_URL, ensure_ollama, list_ollama_models, ollama_up, pull
 from .util import RESULTS
 
 STATE = RESULTS / "library_state.json"
@@ -141,27 +141,6 @@ def build_queue(st: dict, budget_mb: float, refresh: bool, families: list[str] |
 
 
 # --------------------------------------------------------------------------- ollama ops
-
-def pull(tag: str, log=print) -> None:
-    r = requests.post(f"{OLLAMA_URL}/api/pull", json={"model": tag, "stream": True}, stream=True, timeout=None)
-    r.raise_for_status()
-    last_pct, last_status = -10, None
-    for line in r.iter_lines():
-        if not line:
-            continue
-        d = json.loads(line)
-        if d.get("error"):
-            raise RuntimeError(d["error"])
-        st = d.get("status", "")
-        if d.get("total") and d.get("completed") is not None:
-            pct = int(100 * d["completed"] / d["total"])
-            if pct >= last_pct + 25:
-                log(f"    {st[:30]} {pct}%")
-                last_pct = pct
-        elif st != last_status and not st.startswith("pulling "):
-            log(f"    {st}")
-        last_status = st
-
 
 def delete(tag: str, log=print) -> bool:
     try:

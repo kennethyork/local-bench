@@ -2,7 +2,7 @@
 rem Benchmark everything that fits this GPU, then refresh the GitHub Pages copy (docs\).
 rem
 rem   bench-all.bat              your installed models first, then the whole Ollama library
-rem   bench-all.bat mine         only your installed models (Ollama + Hugging Face cache)
+rem   bench-all.bat mine         only your installed Ollama models
 rem   bench-all.bat library      only the Ollama library (pull -> test -> delete, one at a time)
 rem
 rem Resumable: close the window any time and run it again; finished models are skipped.

@@ -6,7 +6,6 @@ own /api/ps is checked too: any CPU spill means the model doesn't fit and the ru
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 import requests
@@ -53,9 +52,15 @@ def _kv_mb(layers, kv_heads, head_dim_k, head_dim_v, ctx, bytes_per=2) -> float:
     return layers * kv_heads * (head_dim_k + head_dim_v) * ctx * bytes_per / 2**20
 
 
+def _same(a: str, b: str) -> bool:
+    """Same Ollama model name? (case-insensitive; ':latest' optional)"""
+    a, b = a.lower(), b.lower()
+    return a == b or a == f"{b}:latest"
+
+
 def estimate_ollama(name: str, num_ctx: int, budget: float | None) -> Fit:
     size = next((m.get("size") for m in list_ollama_models()
-                 if m["name"] in (name, f"{name}:latest")), None)
+                 if _same(m["name"], name)), None)
     if size is None:
         return Fit(f"ollama:{name}", None, budget, note="not pulled yet")
     weights = size / 2**20
@@ -75,34 +80,15 @@ def estimate_ollama(name: str, num_ctx: int, budget: float | None) -> Fit:
     return Fit(f"ollama:{name}", weights + kv + OVERHEAD_MB, budget, weights, kv)
 
 
-def estimate_hf(repo: str, num_ctx: int, budget: float | None, dtype: str = "auto", quant: str | None = None) -> Fit:
-    try:
-        from huggingface_hub import HfApi, hf_hub_download
-        info = HfApi().model_info(repo)
-        params = info.safetensors.total if info.safetensors else None
-        cfg = json.load(open(hf_hub_download(repo, "config.json"), encoding="utf-8"))
-        cfg = cfg.get("text_config", cfg)
-    except Exception as e:
-        return Fit(f"hf:{repo}", None, budget, note=str(e)[:80])
-    if not params:
-        return Fit(f"hf:{repo}", None, budget, note="no safetensors metadata")
-    bpp = {"4bit": 0.56, "8bit": 1.06}.get(quant or "", 4.0 if dtype == "float32" else 2.0)
-    weights = params * bpp / 2**20
-    heads = cfg.get("num_attention_heads") or 1
-    hd = cfg.get("head_dim") or (cfg.get("hidden_size", 0) // heads)
-    kv = _kv_mb(cfg.get("num_hidden_layers", 0), cfg.get("num_key_value_heads", heads), hd, hd, num_ctx)
-    return Fit(f"hf:{repo}", weights + kv + OVERHEAD_MB + 300, budget, weights, kv)  # +300: torch allocator slack
-
-
-def estimate(spec_label: str, num_ctx: int, budget: float | None, dtype="auto", quant=None) -> Fit:
-    kind, _, name = spec_label.partition(":")
-    return estimate_ollama(name, num_ctx, budget) if kind == "ollama" else estimate_hf(name, num_ctx, budget, dtype, quant)
+def estimate(spec_label: str, num_ctx: int, budget: float | None) -> Fit:
+    """spec_label is 'ollama:<name>'."""
+    return estimate_ollama(spec_label.partition(":")[2], num_ctx, budget)
 
 
 def ollama_spilled(name: str) -> str | None:
     """After load: did Ollama put any of the model on the CPU? Returns a reason if so."""
     for m in ollama_ps():
-        if m.get("name") in (name, f"{name}:latest") or m.get("model") in (name, f"{name}:latest"):
+        if _same(m.get("name", ""), name) or _same(m.get("model", ""), name):
             size, vram = m.get("size", 0), m.get("size_vram", 0)
             if size and vram < size * 0.99:
                 return f"{(size - vram) / 2**30:.1f} GB spilled to CPU RAM ({100 * vram / size:.0f}% on GPU)"

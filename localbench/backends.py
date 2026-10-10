@@ -1,11 +1,6 @@
-"""Model backends: Ollama (HTTP API) and Hugging Face transformers (in-process).
+"""Every model runs through Ollama.
 
-Model spec strings:
-    ollama:llama3.2:1b          -> Ollama
-    hf:Qwen/Qwen2.5-1.5B-Instruct -> transformers
-    hf.co/user/repo-GGUF:Q4_K_M -> Ollama (Ollama pulls GGUF straight from HF)
-    llama3.2:1b                 -> no prefix and no "/" -> Ollama
-    Qwen/Qwen2.5-1.5B-Instruct  -> no prefix with "/" -> transformers
+Model specs are Ollama model names, optionally prefixed: `ollama:llama3.2:1b` or `llama3.2:1b`.
 """
 from __future__ import annotations
 
@@ -79,14 +74,13 @@ class Backend:
         return {}
 
 
+def ollama_name(spec: str) -> str:
+    """Model spec -> Ollama model name."""
+    return spec[len("ollama:"):] if spec.startswith("ollama:") else spec
+
+
 def make_backend(spec: str, think: bool = False, **kw) -> Backend:
-    if spec.startswith("ollama:"):
-        return OllamaBackend(spec[len("ollama:"):], think=think, **kw)
-    if spec.startswith("hf:"):
-        return HFBackend(spec[len("hf:"):], think=think, **kw)
-    if spec.startswith("hf.co/") or "/" not in spec:
-        return OllamaBackend(spec, think=think, **kw)
-    return HFBackend(spec, think=think, **kw)
+    return OllamaBackend(ollama_name(spec), think=think, **kw)
 
 
 # --------------------------------------------------------------------------- Ollama
@@ -107,17 +101,9 @@ class OllamaBackend(Backend):
         return r
 
     def ensure_pulled(self):
-        names = {m["name"] for m in list_ollama_models()}
-        if self.model not in names and f"{self.model}:latest" not in names:
+        if not is_pulled(self.model):
             print(f"  pulling {self.model} via Ollama ...")
-            r = self._post("/api/pull", {"model": self.model, "stream": True}, stream=True)
-            last = None
-            for line in r.iter_lines():
-                if line:
-                    st = json.loads(line).get("status")
-                    if st != last:
-                        print("   ", st)
-                        last = st
+            pull(self.model)
 
     def load(self) -> float:
         self.ensure_pulled()
@@ -232,6 +218,33 @@ def ensure_ollama(wait_s: float = 90, log=print) -> bool:
     return False
 
 
+def is_pulled(name: str) -> bool:
+    names = {m["name"].lower() for m in list_ollama_models()}
+    return name.lower() in names or f"{name}:latest".lower() in names
+
+
+def pull(tag: str, log=print) -> None:
+    """Pull a model from the Ollama library, printing sparse progress."""
+    r = requests.post(f"{OLLAMA_URL}/api/pull", json={"model": tag, "stream": True}, stream=True, timeout=None)
+    r.raise_for_status()
+    last_pct, last_status = -10, None
+    for line in r.iter_lines():
+        if not line:
+            continue
+        d = json.loads(line)
+        if d.get("error"):
+            raise RuntimeError(d["error"])
+        st = d.get("status", "")
+        if d.get("total") and d.get("completed") is not None:
+            pct = int(100 * d["completed"] / d["total"])
+            if pct >= last_pct + 25:
+                log(f"    {st[:30]} {pct}%")
+                last_pct = pct
+        elif st != last_status and not st.startswith("pulling "):
+            log(f"    {st}")
+        last_status = st
+
+
 def list_ollama_models() -> list[dict]:
     try:
         return requests.get(f"{OLLAMA_URL}/api/tags", timeout=10).json().get("models", [])
@@ -251,110 +264,3 @@ def ollama_version() -> str | None:
         return requests.get(f"{OLLAMA_URL}/api/version", timeout=5).json().get("version")
     except Exception:
         return None
-
-
-# --------------------------------------------------------------------------- Hugging Face
-
-class HFBackend(Backend):
-    kind = "hf"
-
-    def __init__(self, model: str, think: bool = False, dtype: str = "auto",
-                 quant: str | None = None, **_):
-        super().__init__(model, think)
-        self.dtype = dtype
-        self.quant = quant  # None | "8bit" | "4bit" (needs bitsandbytes)
-        self.tok = None
-        self.lm = None
-
-    def load(self) -> float:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        if not torch.cuda.is_available():
-            print("  WARNING: CUDA not available, HF model will run on CPU (slow).")
-        t0 = time.perf_counter()
-        self.tok = AutoTokenizer.from_pretrained(self.model)
-        kw = {"device_map": "cuda" if torch.cuda.is_available() else "cpu"}
-        if self.quant:
-            from transformers import BitsAndBytesConfig
-            kw["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=self.quant == "4bit", load_in_8bit=self.quant == "8bit",
-                bnb_4bit_compute_dtype=torch.bfloat16)
-        else:
-            kw["dtype"] = self.dtype if self.dtype == "auto" else getattr(torch, self.dtype)
-        self.lm = AutoModelForCausalLM.from_pretrained(self.model, **kw)
-        self.lm.eval()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        return time.perf_counter() - t0
-
-    def unload(self) -> None:
-        import gc
-
-        import torch
-        self.lm = None
-        self.tok = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    def _encode(self, messages):
-        if self.tok.chat_template:
-            text = self.tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
-                                                enable_thinking=self.think)
-        else:  # base model: plain concatenation
-            text = "\n\n".join(m["content"] for m in messages) + "\n"
-        return self.tok(text, return_tensors="pt", add_special_tokens=not self.tok.chat_template)
-
-    def generate(self, messages, max_tokens=256, temperature=0.0, num_ctx=None, seed=0) -> GenResult:
-        import torch
-        from transformers.generation.streamers import BaseStreamer
-
-        if self.lm is None:
-            self.load()
-        enc = self._encode(messages).to(self.lm.device)
-        n_prompt = enc["input_ids"].shape[1]
-
-        class _Timer(BaseStreamer):
-            def __init__(s):
-                s.calls = 0
-                s.first = None
-
-            def put(s, value):
-                s.calls += 1
-                if s.calls == 2 and s.first is None:  # call 1 is the prompt itself
-                    if torch.cuda.is_available():
-                        torch.cuda.synchronize()
-                    s.first = time.perf_counter()
-
-            def end(s):
-                pass
-
-        timer = _Timer()
-        gen_kw = dict(max_new_tokens=max_tokens, streamer=timer,
-                      pad_token_id=self.tok.pad_token_id or self.tok.eos_token_id)
-        if temperature > 0:
-            torch.manual_seed(seed)
-            gen_kw.update(do_sample=True, temperature=temperature)
-        else:
-            gen_kw.update(do_sample=False, temperature=None, top_p=None, top_k=None)
-        t0 = time.perf_counter()
-        with torch.inference_mode():
-            out = self.lm.generate(**enc, **gen_kw)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        total = time.perf_counter() - t0
-        new = out[0, n_prompt:]
-        raw = self.tok.decode(new, skip_special_tokens=True)
-        ttft = (timer.first - t0) if timer.first else total
-        m = re.search(r"<think>(.*?)(</think>|$)", raw, re.S)
-        return GenResult(text=strip_thinking(raw), thinking=m.group(1) if m else "",
-                         prompt_tokens=n_prompt, output_tokens=int(new.shape[0]),
-                         ttft_s=ttft, total_s=total)
-
-    def info(self) -> dict:
-        d = {"dtype": self.dtype, "quantization": self.quant or "none"}
-        if self.lm is not None:
-            d["parameters_b"] = round(sum(p.numel() for p in self.lm.parameters()) / 1e9, 3)
-            d["dtype"] = str(next(self.lm.parameters()).dtype).replace("torch.", "")
-        return d

@@ -84,7 +84,7 @@ def collect(kwh_price: float = 0.15) -> dict:
             "default": DEFAULT, "rating": ratings(cats, DEFAULT), "kwh_price": kwh_price}
 
 
-PUBLIC_SYSTEM_KEYS = ("gpu", "ollama", "torch", "transformers")  # what a benchmark reader needs
+PUBLIC_SYSTEM_KEYS = ("gpu", "ollama")  # what a benchmark reader needs
 
 
 def sanitize(data: dict, full_system: bool = False, responses: bool = True, gallery: bool = True) -> dict:
