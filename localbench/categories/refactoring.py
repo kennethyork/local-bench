@@ -7,7 +7,7 @@ Score: 0 if the hidden tests fail; otherwise 0.5 + 0.5 * (fraction of quality ch
 import ast
 import builtins
 
-from ..hfdata import rows
+from .. import questions
 from ..sandbox import run_python
 from ..textutil import extract_python
 from . import Category, Grade, Item
@@ -67,7 +67,7 @@ class Refactoring(Category):
 
     def load(self):
         items = []
-        for r in rows("bigcode/humanevalpack", "python", "test"):
+        for r in questions.load("humanevalpack_python_test"):
             src = r["declaration"] + r["canonical_solution"]
             try:
                 ugly = _obfuscate(src, r["entry_point"])

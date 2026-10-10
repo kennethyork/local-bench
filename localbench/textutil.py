@@ -66,7 +66,7 @@ def as_bool(v) -> bool | None:
     return None
 
 
-LETTERS = "ABCDEFGHIJ"
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # TruthfulQA has questions with up to 13 options
 
 
 def extract_letter(text: str, n_options: int) -> str | None:

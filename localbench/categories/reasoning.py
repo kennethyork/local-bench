@@ -1,7 +1,7 @@
 """Reasoning (GSM8K + ARC-Challenge) and an optional Knowledge category (MMLU + TruthfulQA)."""
 import random
 
-from ..hfdata import rows
+from .. import questions
 from ..textutil import LETTERS, extract_letter, extract_number, norm_num
 from . import Category, Grade, Item
 
@@ -41,9 +41,9 @@ class Reasoning(Category):
     def load(self):
         gsm = [Item(f"gsm8k/{i}", [{"role": "system", "content": MATH_SYSTEM}, {"role": "user", "content": r["question"]}],
                     {"kind": "num", "answer": norm_num(r["answer"].split("####")[-1].strip())})
-               for i, r in enumerate(rows("openai/gsm8k", "main", "test"))]
+               for i, r in enumerate(questions.load("gsm8k_main_test"))]
         arc = []
-        for r in rows("allenai/ai2_arc", "ARC-Challenge", "test"):
+        for r in questions.load("arc_challenge_test"):
             labels = list(r["choices"]["label"])
             if r["answerKey"] in labels:
                 arc.append(_mc(f"arc/{r['id']}", r["question"], list(r["choices"]["text"]), labels.index(r["answerKey"])))
@@ -70,9 +70,9 @@ class Knowledge(Category):
     def load(self):
         mmlu = [_mc(f"mmlu/{i}", r["question"], list(r["choices"]), int(r["answer"]),
                     f"The following is a question about {r['subject'].replace('_', ' ')}.\n\n")
-                for i, r in enumerate(rows("cais/mmlu", "all", "test"))]
+                for i, r in enumerate(questions.load("mmlu_all_test"))]
         tqa = []
-        for i, r in enumerate(rows("truthfulqa/truthful_qa", "multiple_choice", "validation")):
+        for i, r in enumerate(questions.load("truthfulqa_mc_validation")):
             choices, labels = list(r["mc1_targets"]["choices"]), list(r["mc1_targets"]["labels"])
             order = list(range(len(choices)))
             random.Random(i).shuffle(order)  # gold is always index 0 in the raw data

@@ -1,6 +1,6 @@
 import re
 
-from ..hfdata import rows
+from .. import questions
 from ..sandbox import run_python
 from ..textutil import extract_python
 from . import Category, Grade, Item
@@ -17,7 +17,7 @@ class CodeGen(Category):
 
     def load(self):
         items = []
-        for r in rows("google-research-datasets/mbpp", "sanitized", "test"):
+        for r in questions.load("mbpp_sanitized_test"):
             tests = list(r["test_list"])
             m = re.search(r"assert\s+(?:not\s+)?\(?\s*(?:set\()?\s*(?:math\.isclose\()?\s*([A-Za-z_]\w*)\s*\(", tests[0])
             fn = m.group(1) if m else None

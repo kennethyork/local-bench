@@ -76,5 +76,5 @@ Thinking models run with thinking **off** by default. `--think` turns it on and 
 
 - Model-written code runs in a separate `python -I` process inside a temp dir, with a scrubbed environment and a 10 s timeout. That's isolation for convenience, **not a security sandbox**.
 - Every model runs on the same engine (Ollama) at its default quantization, so differences come from the models, not the runtime. Models are downloaded from Ollama's registry.
-- The benchmark question sets (MBPP, HumanEvalFix, GSM8K, ARC, MMLU, TruthfulQA) are downloaded once from their public dataset pages and then read from the local cache. If those pages are unreachable, the cached copies are used.
+- **Fully local:** the question sets (MBPP, HumanEvalFix, GSM8K, ARC, MMLU, TruthfulQA) are bundled in `localbench/data/` (about 2.5 MB). Sources and licenses are in [`localbench/data/LICENSES.md`](localbench/data/LICENSES.md). The only network use is Ollama pulling models and library mode reading the model list from ollama.com.
 - Results go to `results/*.json` (every response is kept), generated UI pages to `results/ui/<model>/`, and the dashboard to `results/report.html`. The report is rebuilt after every model, so you can watch a long run fill in.

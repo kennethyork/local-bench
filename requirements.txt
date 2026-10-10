@@ -1,8 +1,5 @@
 # Every model runs through Ollama (install it from https://ollama.com).
-# These are only for the benchmark itself: HF datasets, GPU telemetry and HTTP.
-huggingface_hub
-pandas
-pyarrow
+# Question sets are bundled in localbench/data/, so nothing else is downloaded.
 requests
 nvidia-ml-py
 psutil

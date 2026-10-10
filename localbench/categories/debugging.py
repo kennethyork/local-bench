@@ -1,4 +1,4 @@
-from ..hfdata import rows
+from .. import questions
 from ..sandbox import run_python
 from ..textutil import extract_python
 from . import Category, Grade, Item
@@ -15,7 +15,7 @@ class Debugging(Category):
 
     def load(self):
         items = []
-        for r in rows("bigcode/humanevalpack", "python", "test"):
+        for r in questions.load("humanevalpack_python_test"):
             buggy = r["declaration"] + r["buggy_solution"]
             prompt = (f"This Python function has a bug.\n\n```python\n{buggy.strip()}\n```\n\n"
                       f"It should satisfy these tests:\n\n```python\n{r['example_test'].strip()}\n```\n\n"
