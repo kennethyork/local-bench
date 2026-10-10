@@ -199,16 +199,21 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
 
     budget = fit.budget_mb(a.vram_headroom)
     queue = build_queue(st, budget or 0, a.refresh, [f.strip() for f in a.family.split(",")] if a.family else None, log)
+    for rec in st["models"].values():  # older state files saved "too big" as a permanent skip
+        if rec.get("status") == "skipped" and ("GPU budget" in rec.get("reason", "") or "VRAM" in rec.get("reason", "")):
+            rec["status"] = "too_big"
+
     def wanted(t):
-        status = st["models"].get(t["tag"], {}).get("status")
+        rec = st["models"].get(t["tag"], {})
+        status = rec.get("status")
+        if status == "too_big":  # "too big" depends on free VRAM right now, so it's rechecked every run
+            return not rec.get("need_mb") or rec["need_mb"] <= (budget or 0)
         return status in (None, "pending") or (status == "failed" and a.retry_failed)
 
     todo = [t for t in queue if wanted(t)]
     fits = [t for t in todo if t["prefits"]]
-    too_big = [t for t in todo if not t["prefits"]]
-    for t in too_big:
-        st["models"][t["tag"]] = {"status": "skipped", "reason": f"{t['size_gb']} GB download exceeds the GPU budget",
-                                  "size_gb": t["size_gb"]}
+    too_big = len(todo) - len(fits) + sum(1 for t in queue if not wanted(t)
+                                         and st["models"].get(t["tag"], {}).get("status") == "too_big")
     save_state(st)
 
     counts = {}
@@ -216,8 +221,10 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         counts[v["status"]] = counts.get(v["status"], 0) + 1
     total_gb = sum(t["size_gb"] or 0 for t in fits)
     log(f"\nLibrary: {len(st['catalog'])} chat families, {len(queue)} model sizes. "
-        f"Already: {counts.get('done', 0)} done, {counts.get('skipped', 0)} skipped (too big), "
+        f"Already: {counts.get('done', 0)} done, {counts.get('skipped', 0)} skipped (can't run locally), "
         f"{counts.get('failed', 0)} failed.")
+    log(f"Too big for the {(budget or 0) / 1024:.1f} GB of free VRAM right now: {too_big} "
+        "(rechecked every run, so freeing VRAM brings them back).")
     log(f"To do: {len(fits)} models that fit, {total_gb:,.0f} GB to download in total "
         f"({'kept' if a.keep else 'deleted after each test, so only one at a time on disk'}).")
     if a.max_models:
@@ -254,7 +261,8 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
             f = fit.estimate(label, a.need_ctx, budget)
             log("  " + f.line())
             if not f.fits:
-                rec.update(status="skipped", reason=f"needs ~{f.need_mb / 1024:.1f} GB VRAM")
+                # remember the measured need, so it's only re-downloaded once enough VRAM is free
+                rec.update(status="too_big", need_mb=f.need_mb, reason=f"needs ~{f.need_mb / 1024:.1f} GB VRAM")
                 continue
             ok = speed_fn(label) if not a.no_speed else True
             if not ok:
