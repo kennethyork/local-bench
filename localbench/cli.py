@@ -37,8 +37,9 @@ def benchmarkable(specs: list[str]) -> list[str]:
     return keep
 
 
-def already_done(label: str, cats: list[str], speed: bool, limit: int | None) -> bool:
-    """True if saved results already cover this model for every requested part, at >= this limit."""
+def missing_parts(label: str, cats: list[str], speed: bool) -> tuple[bool, list[str]]:
+    """What's still left to benchmark for this model: (needs speed test, categories without a result).
+    Once a part has a saved result it counts as done, whatever settings it ran with; --redo forces it."""
     have_cats, have_speed = set(), False
     for d in load_all():
         if d.get("model") != label:
@@ -46,10 +47,14 @@ def already_done(label: str, cats: list[str], speed: bool, limit: int | None) ->
         if d["kind"] == "perf":
             have_speed = True
         elif d["kind"] == "bench":
-            prev = d.get("settings", {}).get("limit")
-            if prev is None or (limit is not None and prev >= limit):  # a quick smoke run doesn't count
-                have_cats |= {c["category"] for c in d["categories"]}
-    return set(cats) <= have_cats and (have_speed or not speed)
+            have_cats |= {c["category"] for c in d["categories"]}
+    return speed and not have_speed, [c for c in cats if c not in have_cats]
+
+
+def already_done(label: str, cats: list[str], speed: bool, limit: int | None = None) -> bool:
+    """True once every requested part of this model has been benchmarked (any settings)."""
+    need_speed, need_cats = missing_parts(label, cats, speed)
+    return not need_speed and not need_cats
 
 
 def _label(spec: str) -> str:
@@ -226,6 +231,27 @@ def _bench(spec, a, cats):
     print("  saved", path.name)
 
 
+def _speed_part(spec, a, cats) -> bool:
+    """Run the speed test only if it isn't saved yet (or --redo). True = OK to continue."""
+    if a.no_speed:
+        return True
+    if not a.redo and not missing_parts(_label(spec), cats, True)[0]:
+        print("  speed test: already done")
+        return True
+    return _speed(spec, a)
+
+
+def _bench_part(spec, a, cats) -> None:
+    """Run only the categories without a saved result (all of them with --redo)."""
+    todo = cats if a.redo else missing_parts(_label(spec), cats, False)[1]
+    if not todo:
+        print("  categories: all already done")
+        return
+    if len(todo) < len(cats):
+        print(f"  finishing the categories not done yet: {', '.join(todo)}")
+    _bench(spec, a, todo)
+
+
 def _cats(a):
     reg = registry()
     cats = DEFAULT if a.categories == "default" else list(reg) if a.categories == "all" else \
@@ -250,11 +276,8 @@ def cmd_run(a):
         if not ensure_ollama():
             print("Ollama isn't running and couldn't be started - stopping. Progress is saved; run again.")
             return False
-        ok = True
-        if not a.no_speed:
-            ok = _speed(spec, a)
-        if cats and ok:
-            _bench(spec, a, cats)
+        if _speed_part(spec, a, cats):
+            _bench_part(spec, a, cats)
         report.build(kwh_price=a.kwh_price)  # refresh after each model so partial runs are viewable
 
     run_compatible(todo, a, run_one)
@@ -271,8 +294,8 @@ def cmd_library(a):
     try:
         library.run_library(
             a, cats,
-            speed_fn=lambda label: _speed(label, a),
-            bench_fn=lambda label: _bench(label, a, cats),
+            speed_fn=lambda label: _speed_part(label, a, cats),
+            bench_fn=lambda label: _bench_part(label, a, cats),
             done_fn=lambda label: already_done(label, cats, not a.no_speed, a.limit),
             rebuild_fn=lambda: report.build(kwh_price=a.kwh_price),
             publish_fn=lambda: cmd_publish(argparse.Namespace(out="docs", kwh_price=a.kwh_price, full_system=False,

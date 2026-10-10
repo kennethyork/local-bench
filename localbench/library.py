@@ -212,6 +212,8 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         status = rec.get("status")
         if status == "too_big":  # measured after download; only retried if the card could hold it after all
             return not rec.get("need_mb") or rec["need_mb"] <= (gpu_b or 0)
+        if status == "done":  # benchmarked once = done for good, unless forced
+            return a.redo
         return status in (None, "pending", "deferred") or (status == "failed" and a.retry_failed)
 
     todo = [t for t in queue if wanted(t)]
