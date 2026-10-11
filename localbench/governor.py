@@ -59,14 +59,18 @@ class ProfileSpec:
 
 
 PROFILES = {
-    # LocalBench default: full speed while cool, backs off only under heat/power pressure
+    # LocalBench default: like adaptive, but with a lower power cap (220 W on a 3090) and a 70C ceiling.
+    # Token generation is limited by memory bandwidth, so the cap costs little speed but keeps the
+    # card far cooler - and the fans far quieter - than running at its full 350-450 W.
+    "quiet": ProfileSpec("quiet", None, 70, 300, PowerBudget(370.0, 150.0), adaptive=True),
+    # full speed while cool, backs off only under heat/power pressure
     "adaptive": ProfileSpec("adaptive", None, 75, 300, PowerBudget(450.0, 150.0), adaptive=True),
     # the Ocadox presets, unchanged
     "silent": ProfileSpec("silent", 18.0, 65, 120, PowerBudget(300.0, 150.0)),
     "balanced": ProfileSpec("balanced", 45.0, 75, 300, PowerBudget(450.0, 150.0)),
     "turbo": ProfileSpec("turbo", None, None, 600, None),
 }
-DEFAULT_PROFILE = "adaptive"
+DEFAULT_PROFILE = "quiet"
 
 
 def rest_for_load(work_s: float, load: float) -> float:

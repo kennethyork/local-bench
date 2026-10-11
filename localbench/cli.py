@@ -143,7 +143,7 @@ def cmd_models(a):
         f = fit.estimate(spec, 8192, gpu_b)
         wait = f.fits and f.need_mb and free_b and f.need_mb > free_b
         print("  " + (f"WAIT{f.line()[3:]}  (compatible; close other apps to free VRAM)" if wait else f.line()))
-    print("\nGovernor profiles (adaptive is the default; the rest are the Ocadox presets):")
+    print(f"\nGovernor profiles ({DEFAULT_PROFILE} is the default; silent/balanced/turbo are the Ocadox presets):")
     for name, p in PROFILES.items():
         pace = "full speed, rests only under heat/power pressure" if p.adaptive else \
             f"pace {p.tokens_per_second or 'off'} tok/s"
@@ -401,8 +401,9 @@ def main(argv=None):
         sp.add_argument("--kwh-price", type=float, default=0.15, help="electricity price for cost-per-win (USD/kWh)")
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
         sp.add_argument("-g", "--governor", choices=list(PROFILES), default=DEFAULT_PROFILE,
-                        help="adaptive (default: full speed, backs off only when the GPU runs hot or over its "
-                             "power budget) | silent | balanced | turbo (the Ocadox presets). "
+                        help="quiet (default: GPU capped at 220 W, rests from 65C - much quieter fans, a little "
+                             "slower) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
+                             "(the Ocadox presets). "
                              "Power caps need an administrator terminal.")
         sp.add_argument("--max-temp", type=int, default=80,
                         help="hard GPU temperature stop in C, applies to every profile (pause, then abort)")
@@ -463,7 +464,7 @@ def main(argv=None):
 
     sp = sub.add_parser("governor", help="compare quiet-mode profiles on a sustained workload")
     common(sp)
-    sp.add_argument("--profiles", default="adaptive,silent,balanced,turbo")
+    sp.add_argument("--profiles", default="quiet,adaptive,silent,balanced,turbo")
     sp.add_argument("--requests", type=int, default=8, help="back-to-back requests per profile")
     sp.add_argument("--gen", type=int, default=256, help="tokens per request")
     sp.add_argument("--prompt", type=int, default=1024, help="approx prompt tokens per request")

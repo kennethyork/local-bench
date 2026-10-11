@@ -10,10 +10,18 @@ rem
 rem Resumable: close the window any time and run it again; finished models are skipped.
 rem Compatible models that don't fit right now because other apps hold VRAM are deferred, not dropped.
 rem Options pass through, e.g.:
-rem   bench-all.bat --governor balanced          (faster, warmer)
+rem   bench-all.bat --governor adaptive          (full power: faster, louder)
 rem   bench-all.bat --dry-run                    (show the plan only)
 rem   bench-all.bat --family qwen3,gemma3        (only some families)
 setlocal
+rem The quiet governor lowers the GPU power limit, which Windows only allows as administrator.
+net session >nul 2>&1
+if errorlevel 1 (
+  echo Asking for administrator rights so the GPU power limit can be lowered ^(quieter fans^)...
+  powershell -NoProfile -Command "$a = '%*'; try { if ($a) { Start-Process -FilePath '%~f0' -ArgumentList $a -Verb RunAs -ErrorAction Stop } else { Start-Process -FilePath '%~f0' -Verb RunAs -ErrorAction Stop }; exit 0 } catch { exit 1 }"
+  if not errorlevel 1 exit /b
+  echo Not elevated - running anyway. The fans will be louder: only rests between questions apply.
+)
 cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
 set PYTHONUNBUFFERED=1
