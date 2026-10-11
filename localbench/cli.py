@@ -403,7 +403,7 @@ def main(argv=None):
         sp.add_argument("--kwh-price", type=float, default=0.15, help="electricity price for cost-per-win (USD/kWh)")
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
         sp.add_argument("-g", "--governor", choices=list(PROFILES), default=DEFAULT_PROFILE,
-                        help="quiet (default: GPU capped at 220 W, rests from 65C - much quieter fans, a little "
+                        help="quiet (default: GPU capped at 170 W, rests from 60C, fans kept under 55% - much quieter fans, a little "
                              "slower) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
                              "(the Ocadox presets). "
                              "Power caps need an administrator terminal.")

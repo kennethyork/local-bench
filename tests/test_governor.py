@@ -150,7 +150,7 @@ class Adaptive(unittest.TestCase):
         from localbench.governor import DEFAULT_PROFILE
         self.assertEqual(DEFAULT_PROFILE, "quiet")
         self.assertTrue(PROFILES["quiet"].adaptive)
-        self.assertEqual(PROFILES["quiet"].gpu_power_cap_watts, 220.0)
+        self.assertEqual(PROFILES["quiet"].gpu_power_cap_watts, 170.0)
         self.assertIsNone(PROFILES["adaptive"].tokens_per_second)
 
 
