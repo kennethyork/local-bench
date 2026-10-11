@@ -21,6 +21,8 @@ class FakeBackend:
 
 class FakeGov:
     cap = mock.Mock(outcome="not requested")
+    spec = mock.Mock(fan_ceiling_pct=55)
+    fan_watch = object()  # pretend the cap + watchdog are running
 
     def __init__(self, *a, **k):
         pass

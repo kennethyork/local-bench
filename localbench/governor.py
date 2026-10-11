@@ -171,6 +171,8 @@ class PowerCap:
         self.watts, self.index = watts, index
         self.outcome = "not requested"
         self.applied_watts: float | None = None
+        self.current_watts: float | None = None  # what's set right now (the fan watchdog may lower it)
+        self.min_watts: float | None = None
         self._original_mw: int | None = None
 
     def __enter__(self):
@@ -187,7 +189,8 @@ class PowerCap:
                 target = clamp_cap_mw(self.watts, lo, hi)
                 pynvml.nvmlDeviceSetPowerManagementLimit(h, target)
                 self._original_mw = original
-                self.applied_watts = target / 1000
+                self.applied_watts = self.current_watts = target / 1000
+                self.min_watts = lo / 1000
                 self.outcome = f"applied {self.applied_watts:.0f} W (was {original / 1000:.0f} W)"
                 atexit.register(self._restore)  # survive Ctrl-C / crashes
             except pynvml.NVMLError as e:
@@ -199,6 +202,21 @@ class PowerCap:
 
     def __exit__(self, *exc):
         self._restore()
+
+    def set(self, watts: float) -> float | None:
+        """Change the held cap (only while one is applied). Returns the watts now set, or None."""
+        with self._lock:
+            if self._original_mw is None:
+                return None
+            try:
+                h = pynvml.nvmlDeviceGetHandleByIndex(self.index)
+                lo, hi = pynvml.nvmlDeviceGetPowerManagementLimitConstraints(h)
+                target = clamp_cap_mw(watts, lo, hi)
+                pynvml.nvmlDeviceSetPowerManagementLimit(h, target)
+                self.current_watts = target / 1000
+            except Exception:
+                return None
+            return self.current_watts
 
     def _restore(self):
         with self._lock:
@@ -228,6 +246,61 @@ def cap_status(index: int = 0) -> dict:
             "default_watts": pynvml.nvmlDeviceGetPowerManagementDefaultLimit(h) / 1000, "can_set": can}
 
 
+class FanWatch:
+    """Closed loop on fan speed while a power cap is held. Rests between questions can't help during a
+    long answer, so every couple of seconds: fans over the ceiling -> lower the GPU power limit a step
+    (never below the card's minimum); fans back under ceiling - FAN_BAND -> raise it again, slowly,
+    towards the profile's cap. Fans react to heat with a lag, hence the spaced-out steps."""
+
+    STEP_DOWN_W, DOWN_EVERY_S = 15.0, 6.0
+    STEP_UP_W, UP_EVERY_S = 10.0, 20.0
+
+    def __init__(self, cap: PowerCap, ceiling_pct: int, base_watts: float, read_fan=None, log=print,
+                 clock=time.monotonic, interval: float = 2.0):
+        self.cap, self.ceiling, self.base = cap, ceiling_pct, base_watts
+        self.read_fan = read_fan or gpu.fan_percent
+        self.log, self.clock, self.interval = log, clock, interval
+        self.lowest_watts: float | None = None
+        self.steps_down = 0
+        self._last_change = -1e9
+        self._stop = threading.Event()
+        self._t: threading.Thread | None = None
+
+    def step(self):
+        f, cur, now = self.read_fan(), self.cap.current_watts, self.clock()
+        if f is None or cur is None:
+            return
+        floor = self.cap.min_watts or 100.0
+        if f > self.ceiling and cur > floor and now - self._last_change >= self.DOWN_EVERY_S:
+            new = self.cap.set(max(floor, cur - self.STEP_DOWN_W))
+            if new is not None:
+                self._last_change, self.steps_down = now, self.steps_down + 1
+                self.lowest_watts = min(self.lowest_watts or new, new)
+                self.log(f"                     fans {f}% (limit {self.ceiling}%) - GPU power limit {cur:.0f} -> {new:.0f} W")
+        elif f <= self.ceiling - FAN_BAND and cur < self.base and now - self._last_change >= self.UP_EVERY_S:
+            new = self.cap.set(min(self.base, cur + self.STEP_UP_W))
+            if new is not None:
+                self._last_change = now
+                self.log(f"                     fans {f}% - GPU power limit back up to {new:.0f} W")
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            try:
+                self.step()
+            except Exception:
+                pass
+
+    def start(self):
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        if self._t:
+            self._t.join()
+
+
 # --------------------------------------------------------------------------- run-level governor
 
 class Governor:
@@ -243,6 +316,7 @@ class Governor:
         self.max_temp_c = max_temp_c  # hard stop that applies in EVERY profile, turbo included
         self.pacer = Pacer(self.spec)
         self.cap = PowerCap(self.spec.gpu_power_cap_watts)
+        self.fan_watch: FanWatch | None = None
         self.paced_s = 0.0
         self.cooldown_s = 0.0
         self.throttle_events = 0
@@ -255,9 +329,13 @@ class Governor:
     def __enter__(self):
         self.cap.__enter__()
         self.pacer = Pacer(self.spec)
+        if self.spec.fan_ceiling_pct is not None and self.cap.applied_watts is not None:
+            self.fan_watch = FanWatch(self.cap, self.spec.fan_ceiling_pct, self.cap.applied_watts).start()
         return self
 
     def __exit__(self, *exc):
+        if self.fan_watch:
+            self.fan_watch.stop()
         self.cap.__exit__(*exc)
 
     def _observe(self) -> tuple[int | None, float | None]:
@@ -354,6 +432,7 @@ class Governor:
         return {"profile": self.spec.name, "target_tps": self.spec.tokens_per_second,
                 "temp_ceiling_c": self.spec.temperature_ceiling_c, "fan_ceiling_pct": self.spec.fan_ceiling_pct,
                 "gpu_cap_requested_w": self.spec.gpu_power_cap_watts, "cap": self.cap.outcome,
-                "cap_applied_w": self.cap.applied_watts, "paced_s": round(self.paced_s, 1),
+                "cap_applied_w": self.cap.applied_watts,
+                "fan_watch_lowest_w": self.fan_watch.lowest_watts if self.fan_watch else None, "paced_s": round(self.paced_s, 1),
                 "cooldown_s": round(self.cooldown_s, 1), "throttle_events": self.throttle_events,
                 "max_temp_c": self.max_temp_c, "safety_pauses": self.safety_pauses}

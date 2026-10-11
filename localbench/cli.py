@@ -220,7 +220,11 @@ def _bench(spec, a, cats):
                 print(f"  didn't fully fit in VRAM with that many questions at once - retrying with {slots}")
         with gov:
             if gov.cap.outcome != "not requested":
-                print(f"  governor power cap: {gov.cap.outcome}")
+                print(f"  governor power cap: {gov.cap.outcome}"
+                      + (f" - fan watchdog on (keeps fans under {gov.spec.fan_ceiling_pct}%)" if gov.fan_watch else ""))
+            if gov.spec.fan_ceiling_pct and not gov.fan_watch:
+                print("  WARNING: without the power cap, only rests between questions hold the fans down, so they "
+                      "can get loud during long answers. Start bench-all.bat and click Yes to run as administrator.")
             for name in cats:
                 r = run_category(b, registry()[name], a.limit, a.max_tokens, on_record=keep_ui,
                                  governor=gov, num_ctx=ctx, parallel=slots)

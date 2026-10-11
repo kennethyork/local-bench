@@ -178,5 +178,70 @@ class Fans(unittest.TestCase):
         self.assertEqual(p.load(), 1.0)
 
 
+class FakeCap:
+    def __init__(self, watts=170.0, floor=100.0):
+        self.current_watts, self.min_watts, self.history = watts, floor, []
+
+    def set(self, w):
+        self.current_watts = w
+        self.history.append(w)
+        return w
+
+
+class FanWatchdog(unittest.TestCase):
+    """While a power cap is held, fans over the limit lower it mid-answer; quiet fans raise it back."""
+
+    def make(self, fans):
+        from localbench.governor import FanWatch
+        now = [0.0]
+        cap = FakeCap()
+        w = FanWatch(cap, 55, 170.0, read_fan=lambda: fans[0], log=lambda *_: None, clock=lambda: now[0])
+        return w, cap, now
+
+    def test_loud_fans_lower_the_limit_in_spaced_steps(self):
+        fans = [65]
+        w, cap, now = self.make(fans)
+        for t in range(0, 30, 2):  # 30 s of checks every 2 s
+            now[0] = t
+            w.step()
+        self.assertEqual(cap.history, [155, 140, 125, 110, 100])  # one step per 6 s, never below the floor
+        self.assertEqual(w.lowest_watts, 100)
+
+    def test_holds_inside_the_band(self):
+        fans = [50]  # between 45% and 55%: neither loud nor quiet enough to raise
+        w, cap, now = self.make(fans)
+        cap.current_watts = 140
+        for t in range(0, 120, 2):
+            now[0] = t
+            w.step()
+        self.assertEqual(cap.history, [])
+
+    def test_quiet_fans_raise_it_back_slowly_to_the_profile_cap(self):
+        fans = [65]
+        w, cap, now = self.make(fans)
+        now[0] = 0
+        w.step()  # 155
+        fans[0] = 40
+        for t in range(2, 400, 2):
+            now[0] = t
+            w.step()
+        self.assertEqual(cap.history[0], 155)
+        self.assertEqual(cap.current_watts, 170)  # back to the cap, never above it
+        self.assertTrue(all(b - a <= 10 for a, b in zip(cap.history[1:], cap.history[2:])))
+
+    def test_no_reading_does_nothing(self):
+        fans = [None]
+        w, cap, now = self.make(fans)
+        w.step()
+        self.assertEqual(cap.history, [])
+
+    def test_only_quiet_starts_a_watchdog_and_only_with_a_cap(self):
+        from localbench.governor import Governor
+        g = Governor("quiet")
+        g.cap.applied_watts = None  # no admin rights -> no cap -> no watchdog
+        self.assertIsNone(g.fan_watch)
+        self.assertIsNone(PROFILES["adaptive"].fan_ceiling_pct)
+
+
 if __name__ == "__main__":
     unittest.main()
