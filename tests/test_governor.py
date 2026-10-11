@@ -148,7 +148,7 @@ class Adaptive(unittest.TestCase):
 
     def test_is_the_default_and_never_fixed_rate(self):
         from localbench.governor import DEFAULT_PROFILE
-        self.assertEqual(DEFAULT_PROFILE, "quiet")
+        self.assertEqual(DEFAULT_PROFILE, "fast")
         self.assertTrue(PROFILES["quiet"].adaptive)
         self.assertEqual(PROFILES["quiet"].gpu_power_cap_watts, 170.0)
         self.assertIsNone(PROFILES["adaptive"].tokens_per_second)
@@ -276,6 +276,38 @@ class QuietNeverWaits(unittest.TestCase):
     def test_starts_at_170_and_may_boost_to_the_card_maximum(self):
         self.assertEqual(PROFILES["quiet"].gpu_power_cap_watts, 170.0)
         self.assertEqual(PROFILES["quiet"].boost_cap_watts, 450.0)  # clamped to the card's own maximum
+
+
+class FastProfile(unittest.TestCase):
+    """The default: full power, never pauses, a temperature watchdog trims power only above 75C."""
+
+    def test_full_power_and_never_waits(self):
+        f = PROFILES["fast"]
+        self.assertTrue(f.never_waits)
+        self.assertGreaterEqual(f.gpu_power_cap_watts, 450)  # clamped to the card's own maximum
+        self.assertEqual(f.temp_watch_c, 75)
+        self.assertIsNone(f.fan_ceiling_pct)
+
+    def test_temperature_watchdog_trims_and_restores(self):
+        from localbench.governor import APPROACH_BAND, FanWatch
+        now, temp = [0.0], [78]
+        cap = FakeCap(450.0)
+        w = FanWatch(cap, 75, 450.0, read_fan=lambda: temp[0], log=lambda *_: None, clock=lambda: now[0],
+                     band=APPROACH_BAND, what="GPU", unit="C")
+        for t in range(0, 14, 2):
+            now[0] = t
+            w.step()
+        self.assertEqual(cap.history, [435, 420, 405])  # hot: one 15 W step per 6 s
+        temp[0] = 72  # inside the band: hold
+        for t in range(14, 60, 2):
+            now[0] = t
+            w.step()
+        self.assertEqual(cap.current_watts, 405)
+        temp[0] = 65  # cool: back up to full power
+        for t in range(60, 400, 2):
+            now[0] = t
+            w.step()
+        self.assertEqual(cap.current_watts, 450)
 
 
 if __name__ == "__main__":

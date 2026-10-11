@@ -9,7 +9,7 @@ from pathlib import Path
 from . import fit, perf, report
 from .backends import ensure_ollama, list_ollama_models, make_backend, not_benchmarkable, ollama_entry, ollama_name
 from .categories import DEFAULT, registry, run_category
-from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status
+from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status, restore_leftover_limit
 from .server import PORT as PRIVATE_PORT
 from .server import PRIVATE, kill_orphan_runners, kill_stale_private, unload_all
 from .util import RESULTS, load_all, save, slug
@@ -145,7 +145,9 @@ def cmd_models(a):
         print("  " + (f"WAIT{f.line()[3:]}  (compatible; close other apps to free VRAM)" if wait else f.line()))
     print(f"\nGovernor profiles ({DEFAULT_PROFILE} is the default; silent/balanced/turbo are the Ocadox presets):")
     for name, p in PROFILES.items():
-        pace = "full speed, rests only under heat/power pressure" if p.adaptive else \
+        watch = f", watchdog trims power above {p.temp_watch_c}C" if p.temp_watch_c else ""
+        pace = ("never pauses" + watch if p.never_waits else "full speed, rests only under heat/power pressure") \
+            if p.adaptive else \
             f"pace {p.tokens_per_second or 'off'} tok/s"
         print(f"  {name:<9} {pace}, ceiling {p.temperature_ceiling_c or 'none'}C, "
               f"GPU cap {p.gpu_power_cap_watts or 'none'} W"
@@ -221,10 +223,11 @@ def _bench(spec, a, cats):
         with gov:
             if gov.cap.outcome != "not requested":
                 print(f"  governor power cap: {gov.cap.outcome}"
-                      + (f" - fan watchdog on (keeps fans under {gov.spec.fan_ceiling_pct}%)" if gov.fan_watch else ""))
-            if gov.spec.fan_ceiling_pct and not gov.fan_watch:
-                print("  WARNING: no power cap, so nothing is keeping the fans down (quiet never pauses; it relies on "
-                      "the fan watchdog). Start bench-all.bat and click Yes to run as administrator.")
+                      + (f" - watchdog on (trims power above {gov.fan_watch.ceiling}{gov.fan_watch.unit} "
+                         f"{'fan speed' if gov.fan_watch.unit == '%' else 'GPU temperature'})" if gov.fan_watch else ""))
+            if (gov.spec.fan_ceiling_pct or gov.spec.temp_watch_c) and not gov.fan_watch:
+                print("  WARNING: no power limit control (needs administrator), so the watchdog is off - only the "
+                      f"{a.max_temp}C hard stop protects the GPU. Start bench-all.bat and click Yes.")
             for name in cats:
                 r = run_category(b, registry()[name], a.limit, a.max_tokens, on_record=keep_ui,
                                  governor=gov, num_ctx=ctx, parallel=slots)
@@ -432,7 +435,23 @@ def _report(a):
         webbrowser.open(p.as_uri())
 
 
+def no_quick_edit():
+    """Windows: a click in the console window starts a text selection, which pauses every program writing
+    to it - a benchmark (and the fan watchdog) would freeze until Esc. Turn that off for this window only."""
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if k.GetConsoleMode(h, ctypes.byref(mode)):
+            ENABLE_QUICK_EDIT_MODE, ENABLE_EXTENDED_FLAGS = 0x0040, 0x0080
+            k.SetConsoleMode(h, (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS)
+    except Exception:
+        pass  # not Windows, or no console
+
+
 def main(argv=None):
+    no_quick_edit()
     p = argparse.ArgumentParser(prog="localbench",
                                 description="BridgeBench-style benchmarks for local LLMs, run through Ollama.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -445,8 +464,8 @@ def main(argv=None):
         sp.add_argument("--kwh-price", type=float, default=0.15, help="electricity price for cost-per-win (USD/kWh)")
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
         sp.add_argument("-g", "--governor", choices=list(PROFILES), default=DEFAULT_PROFILE,
-                        help="quiet (default: never pauses; a fan watchdog moves the GPU power limit to keep the fans "
-                             "under 55%%) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
+                        help="fast (default: full power, never pauses; a watchdog trims the power limit only while the GPU "
+                             "is over 75C) | quiet (never pauses; a fan watchdog keeps the fans under 55%%) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
                              "(the Ocadox presets). "
                              "Power caps need an administrator terminal.")
         sp.add_argument("--max-temp", type=int, default=80,
@@ -546,6 +565,7 @@ def main(argv=None):
         a.limit = None
     try:
         if a.cmd in ("run", "library", "speed", "governor") and not getattr(a, "dry_run", False):
+            restore_leftover_limit()  # a closed window can leave the GPU at a lowered power limit
             kill_stale_private()   # a private server left by a closed window would hold the port + a model
             kill_orphan_runners()  # leftovers from killed servers silently eat VRAM
         if getattr(a, "parallel", 1) > 1 and a.cmd in ("run", "library", "speed") and not getattr(a, "dry_run", False):

@@ -248,13 +248,11 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
 
     def start_prefetch(nt, current_gb: float):
         """Download the next model while this one is benchmarked (via your normal Ollama server,
-        which doesn't restart between models). Skipped when it wouldn't be needed or wouldn't fit."""
+        which doesn't restart between models). Skipped when it wouldn't be needed or the disk is short; downloading needs no VRAM."""
         if nt is None or a.no_prefetch:
             return
         ntag = by_digest.get(nt["digest"], nt["tag"])
         if ntag in installed or ntag in keep or ntag in prefetch or (done_fn(f"ollama:{ntag}") and not a.redo):
-            return
-        if not room_now((nt["size_gb"] or 0) * 953.7 + 1500):
             return
         if models_dir_free_gb() < (nt["size_gb"] or 0) + current_gb + 5:
             return

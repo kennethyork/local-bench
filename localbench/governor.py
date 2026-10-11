@@ -19,9 +19,11 @@ How it applies to benchmarking:
 from __future__ import annotations
 
 import atexit
+import json
 import threading
 import time
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from . import gpu
 
@@ -56,7 +58,8 @@ class ProfileSpec:
     fan_ceiling_pct: int | None = None  # keep the GPU fans at or below this speed (noise, not heat)
     # The fan watchdog may raise the power cap up to this (clamped to the card's maximum) while fans are quiet.
     boost_cap_watts: float | None = None
-    never_waits: bool = False  # no rests or waits at all; noise is handled only by the fan watchdog's power cap
+    never_waits: bool = False  # no rests or waits at all; noise/heat is handled only by a watchdog's power cap
+    temp_watch_c: int | None = None  # a watchdog trims the power limit while the GPU is above this temperature
 
     @property
     def gpu_power_cap_watts(self) -> float | None:
@@ -64,7 +67,12 @@ class ProfileSpec:
 
 
 PROFILES = {
-    # LocalBench default: as fast as it can go without loud fans. Never rests or waits; it starts at a 170 W
+    # LocalBench default: full speed. Starts at the card's maximum power limit and never pauses; a watchdog
+    # trims the limit only while the GPU is over 75C (and gives it back under 70C), so it never needs the
+    # 80C hard stop. Power limits need an administrator terminal.
+    "fast": ProfileSpec("fast", None, None, 600, PowerBudget(600.0, 150.0), adaptive=True, boost_cap_watts=600.0,
+                        never_waits=True, temp_watch_c=75),
+    # As fast as it can go without loud fans. Never rests or waits; it starts at a 170 W
     # power cap and a fan watchdog moves the cap (100 W .. the card's maximum) to hold the fans at 55%.
     # Only the 80C hard stop (every profile) can pause it. Power caps need an administrator terminal.
     "quiet": ProfileSpec("quiet", None, None, 300, PowerBudget(320.0, 150.0), adaptive=True, fan_ceiling_pct=55,
@@ -76,7 +84,7 @@ PROFILES = {
     "balanced": ProfileSpec("balanced", 45.0, 75, 300, PowerBudget(450.0, 150.0)),
     "turbo": ProfileSpec("turbo", None, None, 600, None),
 }
-DEFAULT_PROFILE = "quiet"
+DEFAULT_PROFILE = "fast"
 
 
 def rest_for_load(work_s: float, load: float) -> float:
@@ -197,6 +205,7 @@ class PowerCap:
                 self.min_watts = lo / 1000
                 self.outcome = f"applied {self.applied_watts:.0f} W (was {original / 1000:.0f} W)"
                 atexit.register(self._restore)  # survive Ctrl-C / crashes
+                _remember_limit(self.index, original)  # survive a closed window too (see restore_leftover_limit)
             except pynvml.NVMLError as e:
                 msg = str(e)
                 if "Permission" in msg:
@@ -232,6 +241,35 @@ class PowerCap:
             except Exception as e:  # pragma: no cover
                 print(f"WARNING: failed to restore GPU power limit: {e}")
             self._original_mw = None
+            _remember_limit(self.index, None)
+
+
+_LEFTOVER = Path(__file__).resolve().parent.parent / "results" / "power_limit_restore.json"
+
+
+def _remember_limit(index: int, mw: int | None):
+    try:
+        if mw is None:
+            _LEFTOVER.unlink(missing_ok=True)
+        elif not _LEFTOVER.exists():  # keep the first original if runs overlap
+            _LEFTOVER.parent.mkdir(parents=True, exist_ok=True)
+            _LEFTOVER.write_text(json.dumps({"index": index, "mw": mw}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def restore_leftover_limit(log=print) -> None:
+    """A run whose window was closed never restored the power limit it set. Put the saved original back."""
+    if not _LEFTOVER.exists() or pynvml is None or not gpu.available():
+        return
+    try:
+        d = json.loads(_LEFTOVER.read_text(encoding="utf-8"))
+        h = pynvml.nvmlDeviceGetHandleByIndex(d["index"])
+        pynvml.nvmlDeviceSetPowerManagementLimit(h, d["mw"])
+        _LEFTOVER.unlink(missing_ok=True)
+        log(f"Restored the GPU power limit a closed run left behind: {d['mw'] / 1000:.0f} W")
+    except Exception:
+        pass  # not admin: leave the file for an elevated run
 
 
 def cap_status(index: int = 0) -> dict:
@@ -260,8 +298,9 @@ class FanWatch:
     STEP_UP_W, UP_EVERY_S = 10.0, 20.0
 
     def __init__(self, cap: PowerCap, ceiling_pct: int, base_watts: float, read_fan=None, log=print,
-                 clock=time.monotonic, interval: float = 2.0):
+                 clock=time.monotonic, interval: float = 2.0, band: int = FAN_BAND, what: str = "fans", unit: str = "%"):
         self.cap, self.ceiling, self.base = cap, ceiling_pct, base_watts
+        self.band, self.what, self.unit = band, what, unit
         self.read_fan = read_fan or gpu.fan_percent
         self.log, self.clock, self.interval = log, clock, interval
         self.lowest_watts: float | None = None
@@ -280,12 +319,13 @@ class FanWatch:
             if new is not None:
                 self._last_change, self.steps_down = now, self.steps_down + 1
                 self.lowest_watts = min(self.lowest_watts or new, new)
-                self.log(f"                     fans {f}% (limit {self.ceiling}%) - GPU power limit {cur:.0f} -> {new:.0f} W")
-        elif f <= self.ceiling - FAN_BAND and cur < self.base and now - self._last_change >= self.UP_EVERY_S:
+                self.log(f"                     {self.what} {f}{self.unit} (limit {self.ceiling}{self.unit}) - "
+                         f"GPU power limit {cur:.0f} -> {new:.0f} W")
+        elif f <= self.ceiling - self.band and cur < self.base and now - self._last_change >= self.UP_EVERY_S:
             new = self.cap.set(min(self.base, cur + self.STEP_UP_W))
             if new is not None:
                 self._last_change = now
-                self.log(f"                     fans {f}% - GPU power limit back up to {new:.0f} W")
+                self.log(f"                     {self.what} {f}{self.unit} - GPU power limit back up to {new:.0f} W")
 
     def _run(self):
         while not self._stop.wait(self.interval):
@@ -335,9 +375,12 @@ class Governor:
     def __enter__(self):
         self.cap.__enter__()
         self.pacer = Pacer(self.limits)
-        if self.spec.fan_ceiling_pct is not None and self.cap.applied_watts is not None:
-            self.fan_watch = FanWatch(self.cap, self.spec.fan_ceiling_pct,
-                                      max(self.cap.applied_watts, self.spec.boost_cap_watts or 0)).start()
+        top = max(self.cap.applied_watts or 0, self.spec.boost_cap_watts or 0)
+        if self.cap.applied_watts is not None and self.spec.fan_ceiling_pct is not None:
+            self.fan_watch = FanWatch(self.cap, self.spec.fan_ceiling_pct, top).start()
+        elif self.cap.applied_watts is not None and self.spec.temp_watch_c is not None:
+            self.fan_watch = FanWatch(self.cap, self.spec.temp_watch_c, top, read_fan=gpu.temperature_c,
+                                      band=APPROACH_BAND, what="GPU", unit="C").start()
         return self
 
     def __exit__(self, *exc):
