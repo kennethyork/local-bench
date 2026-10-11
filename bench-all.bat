@@ -38,6 +38,9 @@ if not "%MODE%"=="mine" (
 )
 
 echo.
+echo ===== Freeing the GPU =====
+"%PY%" -m localbench unload
+echo.
 echo Done or stopped. Dashboard: results\report.html   GitHub Pages copy: docs\index.html
 pause
 exit /b

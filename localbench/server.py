@@ -65,6 +65,77 @@ def kill_orphan_runners(log=print) -> float:
     return stopped
 
 
+def other_run_active() -> bool:
+    """Is another LocalBench run going? Any other Python process from this project's .venv counts;
+    one we can't inspect (e.g. an administrator run) is assumed to be one, to stay on the safe side."""
+    import psutil
+    venv = os.path.normcase(os.path.dirname(os.path.dirname(os.path.abspath(__import__("sys").executable))))
+    me = os.getpid()
+    family = {me, os.getppid()}
+    for p in psutil.process_iter(["pid", "name"]):
+        if p.info["pid"] in family or "python" not in (p.info["name"] or "").lower():
+            continue
+        try:
+            exe = os.path.normcase(p.exe())
+            if exe.startswith(venv):
+                cmd = " ".join(p.cmdline())
+                if "localbench" in cmd and "unload" not in cmd:
+                    return True
+        except psutil.AccessDenied:
+            return True
+        except psutil.NoSuchProcess:
+            continue
+    return False
+
+
+def kill_stale_private(log=print) -> bool:
+    """Stop a LocalBench private server left behind by a closed window, so it can't hold the port and
+    a model. Never touches it while any other LocalBench run is active (that run may be using it)."""
+    import psutil
+    if other_run_active():
+        return False
+    try:
+        conns = psutil.net_connections(kind="tcp")
+    except (psutil.AccessDenied, OSError):
+        return False
+    for c in conns:
+        if c.laddr and c.laddr.port == PORT and c.status == psutil.CONN_LISTEN and c.pid:
+            if PRIVATE.proc and PRIVATE.proc.pid == c.pid:
+                return False  # ours, in use
+            try:
+                if "ollama" not in psutil.Process(c.pid).name().lower():
+                    return False
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return False
+            r = subprocess.run(["taskkill", "/PID", str(c.pid), "/T", "/F"], capture_output=True,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode == 0:
+                log("Stopped a leftover LocalBench Ollama server from an earlier run.")
+                return True
+            log("A leftover LocalBench Ollama server is still running, but it couldn't be stopped from here "
+                "(it was started as administrator). Run this as administrator, or restart the PC.")
+            return False
+    return False
+
+
+def unload_all(log=print) -> int:
+    """Unload every model from your normal Ollama and LocalBench's private server (if running)."""
+    n = 0
+    for base in (OLLAMA_URL, URL):
+        try:
+            models = requests.get(f"{base}/api/ps", timeout=3).json().get("models", [])
+        except requests.RequestException:
+            continue
+        for m in models:
+            try:
+                requests.post(f"{base}/api/generate", json={"model": m["name"], "keep_alive": 0}, timeout=60)
+                log(f"  unloaded {m['name']}")
+                n += 1
+            except requests.RequestException:
+                pass
+    return n
+
+
 class PrivateServer:
     def __init__(self):
         self.proc: subprocess.Popen | None = None
@@ -84,6 +155,12 @@ class PrivateServer:
             if self.active and self.parallel == parallel and self.proc and self.proc.poll() is None and self._up():
                 return True
             self._stop_proc()
+            if self._up():  # the port is answering but it isn't ours: never adopt a server we didn't start
+                log(f"  port {PORT} is in use by another Ollama server - using your normal Ollama "
+                    "(one question at a time) for this run")
+                self.active = False
+                use_url(OLLAMA_URL)
+                return False
             exe = _ollama_exe()
             if not exe:
                 log("  ollama.exe not found - using your normal Ollama server (one request at a time)")

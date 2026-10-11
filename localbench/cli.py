@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import webbrowser
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from .backends import ensure_ollama, list_ollama_models, make_backend, not_bench
 from .categories import DEFAULT, registry, run_category
 from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status
 from .server import PORT as PRIVATE_PORT
-from .server import PRIVATE, kill_orphan_runners
+from .server import PRIVATE, kill_orphan_runners, kill_stale_private, unload_all
 from .util import RESULTS, load_all, save, slug
 
 
@@ -361,6 +362,25 @@ def cmd_publish(a):
         webbrowser.open(page.as_uri())
 
 
+def cmd_unload(a):
+    """Give the GPU back: unload every model and stop LocalBench leftovers."""
+    from . import gpu
+    from .server import other_run_active
+    if other_run_active() and not a.force:
+        print("A LocalBench run is still going, so nothing was unloaded (it would interrupt the model being "
+              "tested). Run this after it finishes, or add --force.")
+        return
+    before = gpu.used_mb()
+    PRIVATE.stop()
+    kill_stale_private()
+    n = unload_all()
+    kill_orphan_runners()
+    time.sleep(2)
+    after = gpu.used_mb()
+    print(f"VRAM in use: {before / 1024:.1f} GB -> {after / 1024:.1f} GB"
+          + ("" if n else " (no models were loaded)"))
+
+
 def _report(a):
     p = report.build(kwh_price=getattr(a, "kwh_price", 0.15))
     print(f"\nReport: {p}")
@@ -459,6 +479,10 @@ def main(argv=None):
     sp.add_argument("--open", action="store_true")
     sp.set_defaults(fn=cmd_publish)
 
+    sp = sub.add_parser("unload", help="free the GPU: unload all models and stop LocalBench leftovers")
+    sp.add_argument("--force", action="store_true", help="unload even while a LocalBench run is active")
+    sp.set_defaults(fn=cmd_unload)
+
     sp = sub.add_parser("report", help="rebuild results/report.html")
     sp.add_argument("--kwh-price", type=float, default=0.15)
     sp.add_argument("--open", action="store_true")
@@ -472,6 +496,7 @@ def main(argv=None):
         a.limit = None
     try:
         if a.cmd in ("run", "library", "speed", "governor") and not getattr(a, "dry_run", False):
+            kill_stale_private()   # a private server left by a closed window would hold the port + a model
             kill_orphan_runners()  # leftovers from killed servers silently eat VRAM
         if getattr(a, "parallel", 1) > 1 and a.cmd in ("run", "library", "speed") and not getattr(a, "dry_run", False):
             if PRIVATE.start(1):
