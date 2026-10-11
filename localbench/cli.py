@@ -412,8 +412,8 @@ def main(argv=None):
         sp.add_argument("--vram-headroom", type=float, default=0.92,
                         help="fraction of total VRAM a model may use (minus what other apps hold)")
         sp.add_argument("--force", action="store_true", help="run models even if the fit check says they won't fit")
-        sp.add_argument("--parallel", type=int, default=4, choices=[1, 2, 3, 4],
-                        help="max questions answered at once (default 4; each model gets as many as fit in VRAM). "
+        sp.add_argument("--parallel", type=int, default=8, choices=range(1, 9), metavar="1-8",
+                        help="max questions answered at once (default 8; each model gets as many as fit in VRAM). "
                              "1 = one at a time on your normal Ollama server.")
 
     def speed_args(sp):

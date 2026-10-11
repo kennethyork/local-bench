@@ -98,58 +98,87 @@ def _answer(backend: Backend, it: Item, mt: int, num_ctx, log):
         return "", 0, str(e)[:200], False, time.perf_counter() - t
 
 
+MAX_REST_BASIS_S = 90.0  # a rest is sized from at most this much preceding work (keeps rests bounded)
+
+
 def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens: int | None = None,
                  log=print, on_record=None, governor=None, num_ctx: int | None = None,
                  parallel: int = 1) -> dict:
-    """Ask every item and grade it. With parallel > 1, questions go out in waves of that size
-    (the server must have that many slots); results, grading and logs stay in question order."""
-    from concurrent.futures import ThreadPoolExecutor
+    """Ask every item and grade it, keeping up to `parallel` questions in flight (the server must have
+    that many slots). A new question starts as soon as one finishes; only when the governor reports
+    heat, power or fan pressure does it let the in-flight answers finish and rest. Fixed-rate governor
+    profiles (silent, balanced) pace after every `parallel` answers instead. Records stay in question order."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
     items = cat.items(limit)
-    records, total_score = [], 0.0
+    jobs = []
+    for it in items:
+        mt = max_tokens or it.max_tokens or cat.max_tokens
+        jobs.append((it, mt + 4096 if backend.think else mt))
+    records: list = [None] * len(items)
+    total_score, done_n, out_tokens = 0.0, 0, 0
+    seg = {"tok": 0, "t0": time.perf_counter(), "since_rest": 0}
     t0 = time.perf_counter()
-    out_tokens = 0
-    pool = ThreadPoolExecutor(max_workers=parallel) if parallel > 1 else None
+
+    def work(job):
+        it, mt = job
+        text, n_out, err, trunc, item_s = _answer(backend, it, mt, num_ctx, log)
+        return text, n_out, trunc, item_s, (cat.grade(it, text) if not err else Grade(0.0, f"generation error: {err}"))
+
+    def finish(i, result):
+        nonlocal total_score, done_n, out_tokens
+        it = jobs[i][0]
+        text, n_out, trunc, item_s, g = result
+        done_n += 1
+        out_tokens += n_out
+        seg["tok"] += n_out
+        seg["since_rest"] += 1
+        total_score += g.score
+        rec = {"id": it.id, "score": round(g.score, 4), "detail": g.detail, "output_tokens": n_out,
+               "seconds": round(item_s, 2), "truncated": trunc, "response": text[-1500:], **g.extra}
+        records[i] = rec
+        if on_record:
+            on_record(it, text, rec)
+        # one line per question, so slow or paced runs never look frozen
+        log(f"  {cat.name:<13} {done_n:>4}/{len(items)}  score {100 * total_score / done_n:5.1f}  "
+            f"({n_out} tok in {item_s:.1f}s)")
+
+    def rest():
+        if governor:
+            governor.after_request(seg["tok"], min(time.perf_counter() - seg["t0"], MAX_REST_BASIS_S),
+                                   on_rest=lambda sec: log(
+                f"                     resting {sec:.0f}s ({governor.name} governor: GPU "
+                f"{gpu.temperature_c()}C / {gpu.power_w() or 0:.0f} W / fans {gpu.fan_percent()}%)"))
+            governor.before_request()  # safety stop, fan and thermal waits
+        seg.update(tok=0, t0=time.perf_counter(), since_rest=0)
+
+    continuous = governor is None or governor.continuous()
+    pool = ThreadPoolExecutor(max_workers=max(parallel, 1))
     try:
         with gpu.GpuSampler(interval=0.2) as s:
-            for start in range(0, len(items), parallel):
-                wave = items[start:start + parallel]
-                if governor:
-                    governor.before_request()
-                t_wave = time.perf_counter()
-                jobs = []
-                for it in wave:
-                    mt = max_tokens or it.max_tokens or cat.max_tokens
-                    if backend.think:
-                        mt += 4096
-                    jobs.append((it, mt))
-                if pool:
-                    answers = list(pool.map(lambda j: _answer(backend, j[0], j[1], num_ctx, log), jobs))
-                else:
-                    answers = [_answer(backend, it, mt, num_ctx, log) for it, mt in jobs]
-                wave_s, wave_tok = time.perf_counter() - t_wave, 0
-                for k, ((it, _), (text, n_out, err, trunc, item_s)) in enumerate(zip(jobs, answers)):
-                    i = start + k + 1
-                    g = cat.grade(it, text) if not err else Grade(0.0, f"generation error: {err}")
-                    out_tokens += n_out
-                    wave_tok += n_out
-                    total_score += g.score
-                    rec = {"id": it.id, "score": round(g.score, 4), "detail": g.detail, "output_tokens": n_out,
-                           "seconds": round(item_s, 2), "truncated": trunc,
-                           "response": text[-1500:], **g.extra}
-                    records.append(rec)
-                    if on_record:
-                        on_record(it, text, rec)
-                    # one line per question, so slow or paced runs never look frozen
-                    log(f"  {cat.name:<13} {i:>4}/{len(items)}  score {100 * total_score / i:5.1f}  "
-                        f"({n_out} tok in {item_s:.1f}s)")
-                if governor:
-                    governor.after_request(wave_tok, wave_s, on_rest=lambda sec: log(
-                        f"                     resting {sec:.0f}s ({governor.name} governor: GPU "
-                        f"{gpu.temperature_c()}C / {gpu.power_w() or 0:.0f} W / fans {gpu.fan_percent()}%)"))
+            if governor:
+                governor.before_request()
+            nxt, inflight = 0, {}
+            while nxt < len(jobs) or inflight:
+                # fixed-rate profiles work in batches of `parallel`, then pace; the rest refill freely
+                while nxt < len(jobs) and len(inflight) < parallel and (
+                        continuous or seg["since_rest"] + len(inflight) < parallel):
+                    inflight[pool.submit(work, jobs[nxt])] = nxt
+                    nxt += 1
+                done, _ = wait(inflight, return_when=FIRST_COMPLETED)
+                for f in sorted(done, key=inflight.get):
+                    finish(inflight.pop(f), f.result())
+                if not governor or nxt >= len(jobs):
+                    continue
+                if (governor.needs_rest() if continuous else seg["since_rest"] >= parallel):
+                    for f in sorted(inflight, key=inflight.get):  # let the answers in progress finish
+                        finish(inflight[f], f.result())
+                    inflight.clear()
+                    rest()
+            if governor:
+                rest()  # pay off any pressure before the next category or model
     finally:
-        if pool:
-            pool.shutdown(wait=True)
+        pool.shutdown(wait=True)
     elapsed = time.perf_counter() - t0
     n = len(items)
     mean = total_score / n if n else 0.0

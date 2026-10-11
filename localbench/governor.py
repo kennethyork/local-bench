@@ -297,6 +297,22 @@ class Governor:
             f = gpu.fan_percent()
         self.cooldown_s += time.perf_counter() - t0
 
+    def continuous(self) -> bool:
+        """Can work run back-to-back until needs_rest() says otherwise? (Not for fixed-rate pacing.)"""
+        return not self.pace or self.spec.adaptive or self.spec.tokens_per_second is None
+
+    def needs_rest(self) -> bool:
+        """Any pressure that before_request/after_request would act on? Reads sensors, never sleeps."""
+        t, _ = self._observe()
+        if t is not None and self.max_temp_c is not None and t >= self.max_temp_c:
+            return True
+        f = gpu.fan_percent()
+        if self.spec.fan_ceiling_pct is not None and f is not None and f > self.spec.fan_ceiling_pct:
+            return True
+        if t is not None and self.spec.temperature_ceiling_c is not None and t > self.spec.temperature_ceiling_c:
+            return True
+        return self.pace and self.spec.adaptive and self.pacer.load() < 1.0
+
     def before_request(self):
         """Hard safety stop, then profile thermal back-off: past the ceiling, wait (bounded) for the band."""
         self._safety_stop()

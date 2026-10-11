@@ -116,7 +116,7 @@ def parallel_slots(spec_label: str, num_ctx: int, max_slots: int, headroom: floa
         return 1
     limit = min(b for b in (gpu_budget_mb(headroom), free_budget_mb(headroom)) if b is not None) \
         if gpu.gpu_info() else None
-    for slots in (4, 3, 2):
+    for slots in (8, 6, 4, 3, 2):
         if slots <= max_slots and (limit is None or
                                    f.weights_mb + f.kv_mb * slots + OVERHEAD_MB + 256 * (slots - 1) <= limit):
             return slots
