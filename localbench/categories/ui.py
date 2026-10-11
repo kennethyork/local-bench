@@ -171,7 +171,9 @@ class UIGen(Category):
     description = "Build a working, accessible, self-contained web UI from a spec."
     method = (f"{len(SPECS)} UI specs (login, pricing, todo, dashboard, navbar, modal, form, accordion). "
               "Score = fraction of DOM/ARIA/JS/CSS checklist items met. Pages are viewable in the gallery.")
-    max_tokens = 4096
+    # Strong models write rich pages: 4096 cut qwen3.8:27b off on all 8 specs before it reached its
+    # <script>. 7168 still fits an 8K context with the prompt (~750 tokens).
+    max_tokens = 7168
     uses_limit = False
 
     def load(self):
