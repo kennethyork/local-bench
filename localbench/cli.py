@@ -10,7 +10,7 @@ from .backends import ensure_ollama, list_ollama_models, make_backend, not_bench
 from .categories import DEFAULT, registry, run_category
 from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status
 from .server import PORT as PRIVATE_PORT
-from .server import PRIVATE
+from .server import PRIVATE, kill_orphan_runners
 from .util import RESULTS, load_all, save, slug
 
 
@@ -471,6 +471,8 @@ def main(argv=None):
     if hasattr(a, "limit") and a.limit == 0:
         a.limit = None
     try:
+        if a.cmd in ("run", "library", "speed", "governor") and not getattr(a, "dry_run", False):
+            kill_orphan_runners()  # leftovers from killed servers silently eat VRAM
         if getattr(a, "parallel", 1) > 1 and a.cmd in ("run", "library", "speed") and not getattr(a, "dry_run", False):
             if PRIVATE.start(1):
                 print(f"Using LocalBench's own Ollama server (port {PRIVATE_PORT}) so questions can run "

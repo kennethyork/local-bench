@@ -43,6 +43,28 @@ def models_dir() -> str | None:
         return None
 
 
+def kill_orphan_runners(log=print) -> float:
+    """Stop Ollama model runners whose `ollama serve` parent is gone (e.g. the server was killed).
+    Ollama can never reach them again, but they keep holding VRAM. Returns how many were stopped."""
+    import psutil
+    stopped = 0
+    for p in psutil.process_iter(["pid", "name", "ppid", "exe"]):
+        try:
+            name = (p.info["name"] or "").lower()
+            exe = (p.info["exe"] or "").lower()
+            if name != "llama-server.exe" or "ollama" not in exe:
+                continue
+            if psutil.pid_exists(p.info["ppid"]) and "ollama" in psutil.Process(p.info["ppid"]).name().lower():
+                continue  # parent server alive: in use
+            p.kill()
+            stopped += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if stopped:
+        log(f"Stopped {stopped} orphaned Ollama runner(s) that were still holding VRAM.")
+    return stopped
+
+
 class PrivateServer:
     def __init__(self):
         self.proc: subprocess.Popen | None = None
