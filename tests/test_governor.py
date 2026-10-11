@@ -243,5 +243,39 @@ class FanWatchdog(unittest.TestCase):
         self.assertIsNone(PROFILES["adaptive"].fan_ceiling_pct)
 
 
+class WatchedQuiet(unittest.TestCase):
+    """With the fan watchdog holding the power cap, quiet stops resting except as a backstop."""
+
+    def gov(self, temp, fan, watts_now):
+        from unittest import mock
+        from localbench import governor as G
+        g = G.Governor("quiet")
+        g.cap.applied_watts, g.cap.current_watts, g.cap.min_watts = 170.0, watts_now, 100.0
+        g.fan_watch = object()
+        g.limits = G.replace(g.spec, power_budget=None, fan_ceiling_pct=None, temperature_ceiling_c=75)
+        g.pacer = G.Pacer(g.limits)
+        patches = [mock.patch.object(G.gpu, "temperature_c", lambda *a: temp),
+                   mock.patch.object(G.gpu, "power_w", lambda *a: 240.0),
+                   mock.patch.object(G.gpu, "fan_percent", lambda *a: fan)]
+        for x in patches:
+            x.start()
+            self.addCleanup(x.stop)
+        return g
+
+    def test_no_rest_while_the_watchdog_has_room(self):
+        self.assertFalse(self.gov(temp=68, fan=60, watts_now=140).needs_rest())  # warm, loud, watts over 170
+
+    def test_rests_once_the_watchdog_is_at_the_minimum(self):
+        self.assertTrue(self.gov(temp=68, fan=60, watts_now=100).needs_rest())
+
+    def test_rests_past_the_watched_temperature_ceiling(self):
+        self.assertFalse(self.gov(temp=69, fan=40, watts_now=200).needs_rest())  # easing starts at 70C
+        self.assertTrue(self.gov(temp=76, fan=40, watts_now=200).needs_rest())
+
+    def test_watchdog_may_boost_above_the_starting_cap(self):
+        self.assertEqual(PROFILES["quiet"].boost_cap_watts, 250.0)
+        self.assertEqual(PROFILES["quiet"].gpu_power_cap_watts, 170.0)
+
+
 if __name__ == "__main__":
     unittest.main()
