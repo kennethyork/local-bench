@@ -54,10 +54,9 @@ class ProfileSpec:
     power_budget: PowerBudget | None
     adaptive: bool = False  # full speed; rest only in proportion to thermal/power pressure
     fan_ceiling_pct: int | None = None  # keep the GPU fans at or below this speed (noise, not heat)
-    # With a power cap held, a fan watchdog regulates noise directly, so pacing can relax: the watchdog may
-    # raise the cap up to boost_cap_watts while the fans are quiet, and rests only start past this ceiling.
+    # The fan watchdog may raise the power cap up to this (clamped to the card's maximum) while fans are quiet.
     boost_cap_watts: float | None = None
-    watched_temp_ceiling_c: int | None = None
+    never_waits: bool = False  # no rests or waits at all; noise is handled only by the fan watchdog's power cap
 
     @property
     def gpu_power_cap_watts(self) -> float | None:
@@ -65,11 +64,11 @@ class ProfileSpec:
 
 
 PROFILES = {
-    # LocalBench default: like adaptive, but with a lower power cap (170 W on a 3090), a 65C ceiling and
-    # a fan ceiling: it rests whenever the fans pass 55%, whatever the cause, so the noise stays low.
-    # Token generation is limited by memory bandwidth, so the cap costs little speed.
-    "quiet": ProfileSpec("quiet", None, 65, 300, PowerBudget(320.0, 150.0), adaptive=True, fan_ceiling_pct=55,
-                         boost_cap_watts=250.0, watched_temp_ceiling_c=75),
+    # LocalBench default: as fast as it can go without loud fans. Never rests or waits; it starts at a 170 W
+    # power cap and a fan watchdog moves the cap (100 W .. the card's maximum) to hold the fans at 55%.
+    # Only the 80C hard stop (every profile) can pause it. Power caps need an administrator terminal.
+    "quiet": ProfileSpec("quiet", None, None, 300, PowerBudget(320.0, 150.0), adaptive=True, fan_ceiling_pct=55,
+                         boost_cap_watts=450.0, never_waits=True),
     # full speed while cool, backs off only under heat/power pressure
     "adaptive": ProfileSpec("adaptive", None, 75, 300, PowerBudget(450.0, 150.0), adaptive=True),
     # the Ocadox presets, unchanged
@@ -319,10 +318,11 @@ class Governor:
         self.spec = PROFILES[profile]
         self.pace = pace
         self.max_temp_c = max_temp_c  # hard stop that applies in EVERY profile, turbo included
-        self.pacer = Pacer(self.spec)
+        # what pacing acts on: nothing at all for never_waits profiles (their power budget is only the start cap)
+        self.limits = replace(self.spec, power_budget=None, fan_ceiling_pct=None) if self.spec.never_waits             else self.spec
+        self.pacer = Pacer(self.limits)
         self.cap = PowerCap(self.spec.gpu_power_cap_watts)
         self.fan_watch: FanWatch | None = None
-        self.limits = self.spec  # what pacing acts on (relaxed while a fan watchdog runs)
         self.paced_s = 0.0
         self.cooldown_s = 0.0
         self.throttle_events = 0
@@ -334,15 +334,10 @@ class Governor:
 
     def __enter__(self):
         self.cap.__enter__()
-        self.pacer = Pacer(self.spec)
+        self.pacer = Pacer(self.limits)
         if self.spec.fan_ceiling_pct is not None and self.cap.applied_watts is not None:
             self.fan_watch = FanWatch(self.cap, self.spec.fan_ceiling_pct,
                                       max(self.cap.applied_watts, self.spec.boost_cap_watts or 0)).start()
-            # the watchdog now holds the fans down mid-answer, so rests are only a backstop: no easing on
-            # fans or watts, and the thermal ceiling moves up (the 80C hard stop is unchanged)
-            self.limits = replace(self.spec, power_budget=None, fan_ceiling_pct=None,
-                                  temperature_ceiling_c=self.spec.watched_temp_ceiling_c or self.spec.temperature_ceiling_c)
-            self.pacer = Pacer(self.limits)
         return self
 
     def __exit__(self, *exc):
@@ -376,7 +371,7 @@ class Governor:
     def _fans_too_loud(self, f: int | None) -> bool:
         """Fans past the ceiling, and (if a watchdog runs) it has already cut power as far as it can."""
         ceiling = self.spec.fan_ceiling_pct
-        if ceiling is None or f is None or f <= ceiling:
+        if self.spec.never_waits or ceiling is None or f is None or f <= ceiling:
             return False
         if self.fan_watch and (self.cap.current_watts or 0) > (self.cap.min_watts or 100.0) + 0.5:
             return False  # the watchdog is still lowering the power limit; let it work

@@ -243,38 +243,39 @@ class FanWatchdog(unittest.TestCase):
         self.assertIsNone(PROFILES["adaptive"].fan_ceiling_pct)
 
 
-class WatchedQuiet(unittest.TestCase):
-    """With the fan watchdog holding the power cap, quiet stops resting except as a backstop."""
+class QuietNeverWaits(unittest.TestCase):
+    """quiet never rests or waits; the fan watchdog's power cap is its only noise control. Only the 80C
+    hard stop (every profile) can pause it."""
 
-    def gov(self, temp, fan, watts_now):
+    def gov(self, temp, fan, watts_now=140.0, watchdog=True):
         from unittest import mock
         from localbench import governor as G
         g = G.Governor("quiet")
         g.cap.applied_watts, g.cap.current_watts, g.cap.min_watts = 170.0, watts_now, 100.0
-        g.fan_watch = object()
-        g.limits = G.replace(g.spec, power_budget=None, fan_ceiling_pct=None, temperature_ceiling_c=75)
-        g.pacer = G.Pacer(g.limits)
+        g.fan_watch = object() if watchdog else None
         patches = [mock.patch.object(G.gpu, "temperature_c", lambda *a: temp),
-                   mock.patch.object(G.gpu, "power_w", lambda *a: 240.0),
-                   mock.patch.object(G.gpu, "fan_percent", lambda *a: fan)]
+                   mock.patch.object(G.gpu, "power_w", lambda *a: 400.0),
+                   mock.patch.object(G.gpu, "fan_percent", lambda *a: fan),
+                   mock.patch.object(G.time, "sleep", lambda s: self.fail("quiet must never sleep"))]
         for x in patches:
             x.start()
             self.addCleanup(x.stop)
         return g
 
-    def test_no_rest_while_the_watchdog_has_room(self):
-        self.assertFalse(self.gov(temp=68, fan=60, watts_now=140).needs_rest())  # warm, loud, watts over 170
+    def test_never_rests_hot_loud_or_over_power(self):
+        for watchdog in (True, False):
+            for watts in (100.0, 170.0, 300.0):
+                g = self.gov(temp=79, fan=90, watts_now=watts, watchdog=watchdog)
+                self.assertFalse(g.needs_rest())
+                g.before_request()
+                self.assertEqual(g.after_request(5000, 90.0), 0.0)
 
-    def test_rests_once_the_watchdog_is_at_the_minimum(self):
-        self.assertTrue(self.gov(temp=68, fan=60, watts_now=100).needs_rest())
+    def test_the_80c_hard_stop_still_applies(self):
+        self.assertTrue(self.gov(temp=80, fan=40).needs_rest())
 
-    def test_rests_past_the_watched_temperature_ceiling(self):
-        self.assertFalse(self.gov(temp=69, fan=40, watts_now=200).needs_rest())  # easing starts at 70C
-        self.assertTrue(self.gov(temp=76, fan=40, watts_now=200).needs_rest())
-
-    def test_watchdog_may_boost_above_the_starting_cap(self):
-        self.assertEqual(PROFILES["quiet"].boost_cap_watts, 250.0)
+    def test_starts_at_170_and_may_boost_to_the_card_maximum(self):
         self.assertEqual(PROFILES["quiet"].gpu_power_cap_watts, 170.0)
+        self.assertEqual(PROFILES["quiet"].boost_cap_watts, 450.0)  # clamped to the card's own maximum
 
 
 if __name__ == "__main__":

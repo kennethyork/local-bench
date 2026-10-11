@@ -34,7 +34,7 @@ class Forever(unittest.TestCase):
         calls, refreshed, idles = self.run_library(True, [None, RuntimeError("boom"), None, KeyboardInterrupt()])
         self.assertEqual(len(calls), 4)
         self.assertEqual(refreshed, [False, True, True, True])  # later passes re-read ollama.com
-        self.assertEqual(idles, [6 * 3600, 600, 6 * 3600])     # caught up / error retry / caught up
+        self.assertEqual(idles, [6 * 3600, 60, 6 * 3600])     # caught up / error retry / caught up
 
     def test_errors_are_raised_without_forever(self):
         with self.assertRaises(RuntimeError):

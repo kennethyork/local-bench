@@ -223,8 +223,8 @@ def _bench(spec, a, cats):
                 print(f"  governor power cap: {gov.cap.outcome}"
                       + (f" - fan watchdog on (keeps fans under {gov.spec.fan_ceiling_pct}%)" if gov.fan_watch else ""))
             if gov.spec.fan_ceiling_pct and not gov.fan_watch:
-                print("  WARNING: without the power cap, only rests between questions hold the fans down, so they "
-                      "can get loud during long answers. Start bench-all.bat and click Yes to run as administrator.")
+                print("  WARNING: no power cap, so nothing is keeping the fans down (quiet never pauses; it relies on "
+                      "the fan watchdog). Start bench-all.bat and click Yes to run as administrator.")
             for name in cats:
                 r = run_category(b, registry()[name], a.limit, a.max_tokens, on_record=keep_ui,
                                  governor=gov, num_ctx=ctx, parallel=slots)
@@ -328,8 +328,8 @@ def cmd_library(a):
                     raise
                 import traceback
                 traceback.print_exc()
-                print(f"\nThis pass stopped on an error ({e}). Progress is saved; trying again in 10 minutes.")
-                _idle(600)
+                print(f"\nThis pass stopped on an error ({e}). Progress is saved; trying again in a minute.")
+                _idle(60)
                 continue
             if not a.forever or a.dry_run:
                 break
@@ -445,8 +445,8 @@ def main(argv=None):
         sp.add_argument("--kwh-price", type=float, default=0.15, help="electricity price for cost-per-win (USD/kWh)")
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
         sp.add_argument("-g", "--governor", choices=list(PROFILES), default=DEFAULT_PROFILE,
-                        help="quiet (default: GPU capped at 170 W, rests from 60C, fans kept under 55%% - much quieter fans, a little "
-                             "slower) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
+                        help="quiet (default: never pauses; a fan watchdog moves the GPU power limit to keep the fans "
+                             "under 55%%) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
                              "(the Ocadox presets). "
                              "Power caps need an administrator terminal.")
         sp.add_argument("--max-temp", type=int, default=80,
