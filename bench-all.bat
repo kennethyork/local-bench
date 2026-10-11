@@ -2,8 +2,11 @@
 rem Benchmark every local Ollama model from ollama.com that's compatible with this GPU,
 rem then refresh the GitHub Pages copy (docs\).
 rem
-rem   bench-all.bat              the ollama.com library: pull -> test -> delete, one model at a time
-rem                              (models you already have are reused, never deleted)
+rem   bench-all.bat              continuous benchmarking of the ollama.com library: pull -> test -> delete,
+rem                              one model at a time (models you already have are reused, never deleted).
+rem                              When it's caught up it re-checks ollama.com every 6 hours for new models
+rem                              and keeps going; close the window to stop.
+rem   bench-all.bat once         one pass through the library, then stop
 rem   bench-all.bat mine         only models already installed (e.g. custom ones not on ollama.com)
 rem   bench-all.bat both         installed models first, then the library
 rem
@@ -31,8 +34,12 @@ set "MODE=library"
 if /i "%~1"=="mine" set "MODE=mine"
 if /i "%~1"=="both" set "MODE=both"
 if /i "%~1"=="library" set "MODE=library"
+if /i "%~1"=="once" set "MODE=once"
 set "ARGS="
-if /i "%~1"=="mine" (call :drop_first %*) else if /i "%~1"=="both" (call :drop_first %*) else if /i "%~1"=="library" (call :drop_first %*) else (set "ARGS=%*")
+if /i "%~1"=="mine" (call :drop_first %*) else if /i "%~1"=="both" (call :drop_first %*) else if /i "%~1"=="library" (call :drop_first %*) else if /i "%~1"=="once" (call :drop_first %*) else (set "ARGS=%*")
+
+set "FOREVER=--forever"
+if "%MODE%"=="once" (set "MODE=library" & set "FOREVER=")
 
 if not "%MODE%"=="library" (
   echo.
@@ -42,7 +49,7 @@ if not "%MODE%"=="library" (
 if not "%MODE%"=="mine" (
   echo.
   echo ===== ollama.com library =====
-  "%PY%" -m localbench library --publish %ARGS%
+  "%PY%" -m localbench library --publish %FOREVER% %ARGS%
 )
 
 echo.

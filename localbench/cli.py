@@ -207,8 +207,17 @@ def _bench(spec, a, cats):
     gov = Governor(a.governor, max_temp_c=a.max_temp)
     results = []
     try:
-        b.load()
-        perf.check_on_gpu(b)
+        while True:
+            b.load()
+            try:
+                perf.check_on_gpu(b)
+                break
+            except RuntimeError:
+                if slots <= 1:
+                    raise
+                # each slot needs its own KV cache; if the estimate was short, fewer slots will fit
+                slots = _server(max(1, slots // 2), a)
+                print(f"  didn't fully fit in VRAM with that many questions at once - retrying with {slots}")
         with gov:
             if gov.cap.outcome != "not requested":
                 print(f"  governor power cap: {gov.cap.outcome}")
@@ -294,19 +303,48 @@ def cmd_library(a):
     from . import library
     cats = _cats(a)
     a.need_ctx = needed_ctx(a, not a.no_speed)
+    cycle = 0
     try:
-        library.run_library(
-            a, cats,
-            speed_fn=lambda label: _speed_part(label, a, cats),
-            bench_fn=lambda label: _bench_part(label, a, cats),
-            done_fn=lambda label: already_done(label, cats, not a.no_speed, a.limit),
-            rebuild_fn=lambda: report.build(kwh_price=a.kwh_price),
-            publish_fn=lambda: cmd_publish(argparse.Namespace(out="docs", kwh_price=a.kwh_price, full_system=False,
-                                                              no_responses=False, no_gallery=False, open=False)))
+        while True:
+            cycle += 1
+            if a.forever:
+                print(f"\n===== continuous benchmarking: pass {cycle} ({time.strftime('%Y-%m-%d %H:%M')}) =====")
+            try:
+                library.run_library(
+                    a, cats,
+                    speed_fn=lambda label: _speed_part(label, a, cats),
+                    bench_fn=lambda label: _bench_part(label, a, cats),
+                    done_fn=lambda label: already_done(label, cats, not a.no_speed, a.limit),
+                    rebuild_fn=lambda: report.build(kwh_price=a.kwh_price),
+                    publish_fn=lambda: cmd_publish(argparse.Namespace(
+                        out="docs", kwh_price=a.kwh_price, full_system=False, no_responses=False,
+                        no_gallery=False, open=False)))
+            except Exception as e:
+                if not a.forever:
+                    raise
+                import traceback
+                traceback.print_exc()
+                print(f"\nThis pass stopped on an error ({e}). Progress is saved; trying again in 10 minutes.")
+                _idle(600)
+                continue
+            if not a.forever or a.dry_run:
+                break
+            a.refresh = True  # later passes re-read ollama.com, so newly published models get picked up
+            print(f"\nAll caught up. Checking ollama.com for new models again in {a.every_hours:g} hours "
+                  f"(next: {time.strftime('%Y-%m-%d %H:%M', time.localtime(time.time() + a.every_hours * 3600))}). "
+                  "Close this window or press Ctrl+C to stop.")
+            _idle(a.every_hours * 3600)
     except KeyboardInterrupt:
         print("\nStopped. Progress is saved - run the same command again to resume.")
     if not a.dry_run:
         _report(a)
+
+
+def _idle(seconds: float):
+    """Wait between passes with the GPU given back: no models loaded, no LocalBench server running."""
+    PRIVATE.stop()
+    unload_all()
+    time.sleep(seconds)
 
 
 def cmd_speed(a):
@@ -403,7 +441,7 @@ def main(argv=None):
         sp.add_argument("--kwh-price", type=float, default=0.15, help="electricity price for cost-per-win (USD/kWh)")
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
         sp.add_argument("-g", "--governor", choices=list(PROFILES), default=DEFAULT_PROFILE,
-                        help="quiet (default: GPU capped at 170 W, rests from 60C, fans kept under 55% - much quieter fans, a little "
+                        help="quiet (default: GPU capped at 170 W, rests from 60C, fans kept under 55%% - much quieter fans, a little "
                              "slower) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
                              "(the Ocadox presets). "
                              "Power caps need an administrator terminal.")
@@ -455,6 +493,11 @@ def main(argv=None):
     sp.add_argument("--max-models", type=int, help="stop after this many models (handy for a trial)")
     sp.add_argument("--keep", action="store_true", help="keep downloaded models instead of deleting after testing")
     sp.add_argument("--retry-failed", action="store_true", help="retry models that failed last time")
+    sp.add_argument("--forever", action="store_true",
+                    help="continuous benchmarking: never stop - when the library is done, wait, re-check ollama.com "
+                         "for new models and benchmark those too; recover from errors by retrying")
+    sp.add_argument("--every-hours", type=float, default=6,
+                    help="with --forever: hours between checks for new models once caught up (default 6)")
     sp.add_argument("--no-prefetch", action="store_true",
                     help="don't download the next model in the background while the current one is tested")
     sp.set_defaults(fn=cmd_library)

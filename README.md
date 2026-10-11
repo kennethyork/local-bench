@@ -6,11 +6,12 @@ Unlike BridgeBench's editorial ratings, every score here is measured automatical
 
 ## Quick start
 
-**Double-click `bench-all.bat`.** It benchmarks every local model on [ollama.com](https://ollama.com/library) that's compatible with your GPU, smallest first, and refreshes the GitHub Pages copy as it goes. Models you already have are reused, not downloaded again. Models with results are skipped, so you can stop at any time and run it again to continue.
+**Double-click `bench-all.bat`.** It benchmarks every local model on [ollama.com](https://ollama.com/library) that's compatible with your GPU, smallest first, and refreshes the GitHub Pages copy as it goes. Models you already have are reused, not downloaded again. Models with results are skipped, so you can stop at any time and run it again to continue. It runs **continuously**: once it's caught up, it checks ollama.com for new models every 6 hours (`--every-hours`) and benchmarks those too, with the GPU unloaded while it waits. If a pass hits an error, it retries 10 minutes later. Close the window to stop.
 
 | Command | What it does |
 |---|---|
-| `bench-all.bat` | the ollama.com library (the default) |
+| `bench-all.bat` | the ollama.com library, continuously (the default) |
+| `bench-all.bat once` | one pass through the library, then stop |
 | `bench-all.bat mine` | only models you've installed, e.g. custom ones that aren't on ollama.com |
 | `bench-all.bat both` | your installed models, then the library |
 
