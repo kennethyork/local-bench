@@ -68,10 +68,10 @@ class ProfileSpec:
 
 PROFILES = {
     # LocalBench default: full speed. Starts at the card's maximum power limit and never pauses; a watchdog
-    # trims the limit only while the GPU is over 75C (and gives it back under 70C), so it never needs the
-    # 80C hard stop. Power limits need an administrator terminal.
+    # trims the limit only while the GPU is over 72C (and gives it back under 67C), cutting harder the hotter
+    # it is, so it stays clear of the 80C hard stop (which pauses until 70C). Power limits need an administrator terminal.
     "fast": ProfileSpec("fast", None, None, 600, PowerBudget(600.0, 150.0), adaptive=True, boost_cap_watts=600.0,
-                        never_waits=True, temp_watch_c=75),
+                        never_waits=True, temp_watch_c=72),
     # As fast as it can go without loud fans. Never rests or waits; it starts at a 170 W
     # power cap and a fan watchdog moves the cap (100 W .. the card's maximum) to hold the fans at 55%.
     # Only the 80C hard stop (every profile) can pause it. Power caps need an administrator terminal.
@@ -315,7 +315,10 @@ class FanWatch:
             return
         floor = self.cap.min_watts or 100.0
         if f > self.ceiling and cur > floor and now - self._last_change >= self.DOWN_EVERY_S:
-            new = self.cap.set(max(floor, cur - self.STEP_DOWN_W))
+            # temperature: the further over, the bigger the cut, so a fast-heating card is caught before the
+            # hard stop (fans swing by many % and lag, so they keep fixed steps)
+            k = 1 + (f - self.ceiling - 1) / 2 if self.unit == "C" else 1
+            new = self.cap.set(max(floor, cur - self.STEP_DOWN_W * k))
             if new is not None:
                 self._last_change, self.steps_down = now, self.steps_down + 1
                 self.lowest_watts = min(self.lowest_watts or new, new)

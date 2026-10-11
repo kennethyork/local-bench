@@ -465,7 +465,7 @@ def main(argv=None):
         sp.add_argument("--open", action="store_true", help="open the HTML report when done")
         sp.add_argument("-g", "--governor", choices=list(PROFILES), default=DEFAULT_PROFILE,
                         help="fast (default: full power, never pauses; a watchdog trims the power limit only while the GPU "
-                             "is over 75C) | quiet (never pauses; a fan watchdog keeps the fans under 55%%) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
+                             "is over 72C) | quiet (never pauses; a fan watchdog keeps the fans under 55%%) | adaptive (full power, backs off only when hot) | silent | balanced | turbo "
                              "(the Ocadox presets). "
                              "Power caps need an administrator terminal.")
         sp.add_argument("--max-temp", type=int, default=80,

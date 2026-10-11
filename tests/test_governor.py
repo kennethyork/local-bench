@@ -285,19 +285,19 @@ class FastProfile(unittest.TestCase):
         f = PROFILES["fast"]
         self.assertTrue(f.never_waits)
         self.assertGreaterEqual(f.gpu_power_cap_watts, 450)  # clamped to the card's own maximum
-        self.assertEqual(f.temp_watch_c, 75)
+        self.assertEqual(f.temp_watch_c, 72)
         self.assertIsNone(f.fan_ceiling_pct)
 
     def test_temperature_watchdog_trims_and_restores(self):
         from localbench.governor import APPROACH_BAND, FanWatch
-        now, temp = [0.0], [78]
+        now, temp = [0.0], [76]
         cap = FakeCap(450.0)
         w = FanWatch(cap, 75, 450.0, read_fan=lambda: temp[0], log=lambda *_: None, clock=lambda: now[0],
                      band=APPROACH_BAND, what="GPU", unit="C")
         for t in range(0, 14, 2):
             now[0] = t
             w.step()
-        self.assertEqual(cap.history, [435, 420, 405])  # hot: one 15 W step per 6 s
+        self.assertEqual(cap.history, [435, 420, 405])  # 1C over: one 15 W step per 6 s
         temp[0] = 72  # inside the band: hold
         for t in range(14, 60, 2):
             now[0] = t
@@ -308,6 +308,13 @@ class FastProfile(unittest.TestCase):
             now[0] = t
             w.step()
         self.assertEqual(cap.current_watts, 450)
+
+    def test_hotter_means_bigger_cuts(self):
+        from localbench.governor import FanWatch
+        cap = FakeCap(450.0)
+        w = FanWatch(cap, 72, 450.0, read_fan=lambda: 79, log=lambda *_: None, clock=lambda: 0.0, unit="C")
+        w.step()
+        self.assertEqual(cap.history, [390.0])  # 7C over: 15 W x 4 = 60 W in one step
 
 
 if __name__ == "__main__":
