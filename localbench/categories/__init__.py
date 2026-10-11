@@ -50,6 +50,7 @@ class Category:
 
 
 def registry() -> dict[str, Category]:
+    from .backend import BackEnd
     from .codegen import CodeGen
     from .debugging import Debugging
     from .hallucination import Hallucination
@@ -58,7 +59,7 @@ def registry() -> dict[str, Category]:
     from .security import Security
     from .ui import UIGen
 
-    cats = [Debugging(), CodeGen(), Refactoring(), Security(), Hallucination(), UIGen(), Reasoning(), Knowledge()]
+    cats = [Debugging(), CodeGen(), Refactoring(), Security(), Hallucination(), UIGen(), Reasoning(), Knowledge(), BackEnd()]
     return {c.name: c for c in cats}
 
 

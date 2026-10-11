@@ -13,8 +13,8 @@ import tempfile
 _ENV_KEEP = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP", "PATH", "COMSPEC")
 
 
-def run_python(code: str, timeout: float = 10.0) -> tuple[bool, str]:
-    """Returns (passed, short_error). Passed means exit code 0 within the timeout."""
+def run_python_output(code: str, timeout: float = 10.0) -> tuple[int | None, str, str]:
+    """Run `code`; returns (exit code or None on timeout, stdout, stderr)."""
     env = {k: os.environ[k] for k in _ENV_KEEP if k in os.environ}
     env["PYTHONIOENCODING"] = "utf-8"
     with tempfile.TemporaryDirectory(prefix="lb_") as d:
@@ -27,8 +27,16 @@ def run_python(code: str, timeout: float = 10.0) -> tuple[bool, str]:
                                stdin=subprocess.DEVNULL,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except subprocess.TimeoutExpired:
-            return False, "timeout"
-    if p.returncode == 0:
+            return None, "", "timeout"
+    return p.returncode, p.stdout or "", p.stderr or ""
+
+
+def run_python(code: str, timeout: float = 10.0) -> tuple[bool, str]:
+    """Returns (passed, short_error). Passed means exit code 0 within the timeout."""
+    rc, out, err = run_python_output(code, timeout)
+    if rc is None:
+        return False, "timeout"
+    if rc == 0:
         return True, ""
-    err = (p.stderr or p.stdout).strip().splitlines()
-    return False, (err[-1] if err else f"exit {p.returncode}")[:300]
+    lines = (err or out).strip().splitlines()
+    return False, (lines[-1] if lines else f"exit {rc}")[:300]

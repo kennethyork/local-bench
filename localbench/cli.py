@@ -428,7 +428,7 @@ def main(argv=None):
     speed_args(sp)
     sp.add_argument("-c", "--categories", default="default",
                     help="'default', 'all', or a comma list (debugging,codegen,refactoring,security,"
-                         "hallucination,ui,reasoning,knowledge)")
+                         "hallucination,ui,reasoning,knowledge,backend)")
     sp.add_argument("--limit", type=int, default=40,
                     help="max items for dataset-backed categories (0 = full dataset). Curated sets always run in full.")
     sp.add_argument("--max-tokens", type=int, help="override max output tokens per item")

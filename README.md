@@ -65,6 +65,7 @@ The published copy includes only the GPU name, VRAM and runtime versions. `--ful
 | **UI Gen** | 8 page specs (login, pricing, todo, dashboard, navbar, modal, form, accordion) | DOM/ARIA/JS/CSS checklist; pages shown side by side in the gallery |
 | **Reasoning** | GSM8K + ARC-Challenge | exact answer match |
 | Knowledge *(optional, `-c all`)* | MMLU + TruthfulQA | exact answer match |
+| Back End *(optional, `-c backend` or `-c all`)* | 6 SQL tasks on a shop database + 8 API/service tasks (REST handler, router, pagination, rate limiter, signed tokens, TTL cache, retry with backoff, log summary) | SQL rows must match a reference query; code runs against unit tests, partial credit per test |
 | **Speed** | synthetic prompts at `--ctx 128,1024,4096` | TTFT, prefill tok/s, decode tok/s, load time, peak VRAM |
 | **Efficiency** | GPU power metered during the runs | Wh per solved item, $ per 1,000 wins (`--kwh-price`), tok/J |
 
