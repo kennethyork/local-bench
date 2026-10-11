@@ -62,9 +62,9 @@ class ProfileSpec:
 
 PROFILES = {
     # LocalBench default: like adaptive, but with a lower power cap (220 W on a 3090), a 70C ceiling and
-    # a fan ceiling: it rests whenever the fans pass 45%, whatever the cause, so the noise stays low.
+    # a fan ceiling: it rests whenever the fans pass 55%, whatever the cause, so the noise stays low.
     # Token generation is limited by memory bandwidth, so the cap costs little speed.
-    "quiet": ProfileSpec("quiet", None, 70, 300, PowerBudget(370.0, 150.0), adaptive=True, fan_ceiling_pct=45),
+    "quiet": ProfileSpec("quiet", None, 70, 300, PowerBudget(370.0, 150.0), adaptive=True, fan_ceiling_pct=55),
     # full speed while cool, backs off only under heat/power pressure
     "adaptive": ProfileSpec("adaptive", None, 75, 300, PowerBudget(450.0, 150.0), adaptive=True),
     # the Ocadox presets, unchanged

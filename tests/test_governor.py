@@ -169,7 +169,7 @@ class Fans(unittest.TestCase):
         self.assertGreaterEqual(load_for_fan(100, 45), 0.15)
         p = Pacer(PROFILES["quiet"])
         p.observe_temperature(55)
-        p.observe_fan(60)
+        p.observe_fan(65)
         self.assertGreater(rest_for_load(90.0, p.load()), 90.0)  # a 90 s answer -> rest longer than that
 
     def test_other_profiles_ignore_fans(self):
