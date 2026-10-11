@@ -154,5 +154,29 @@ class Adaptive(unittest.TestCase):
         self.assertIsNone(PROFILES["adaptive"].tokens_per_second)
 
 
+class Fans(unittest.TestCase):
+    """quiet keeps the fans down whatever the cause; other profiles ignore them."""
+
+    def test_full_speed_while_fans_are_low(self):
+        p = Pacer(PROFILES["quiet"])
+        p.observe_fan(30)
+        self.assertEqual(p.fan_load, 1.0)
+
+    def test_eases_near_and_hardens_past_the_fan_ceiling(self):
+        from localbench.governor import load_for_fan, rest_for_load
+        self.assertAlmostEqual(load_for_fan(45, 45), 0.5)
+        self.assertLess(load_for_fan(60, 45), 0.5)
+        self.assertGreaterEqual(load_for_fan(100, 45), 0.15)
+        p = Pacer(PROFILES["quiet"])
+        p.observe_temperature(55)
+        p.observe_fan(60)
+        self.assertGreater(rest_for_load(90.0, p.load()), 90.0)  # a 90 s answer -> rest longer than that
+
+    def test_other_profiles_ignore_fans(self):
+        p = Pacer(PROFILES["adaptive"])
+        p.observe_fan(100)
+        self.assertEqual(p.load(), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

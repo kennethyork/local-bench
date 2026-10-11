@@ -55,6 +55,20 @@ def power_w(index: int = 0) -> float | None:
         return None
 
 
+def fan_percent(index: int = 0) -> int | None:
+    """Fastest fan's speed in % of its maximum (0 = stopped, e.g. zero-RPM mode). None if unknown."""
+    if not _NVML:
+        return None
+    try:
+        h = pynvml.nvmlDeviceGetHandleByIndex(index)
+        try:
+            return max(pynvml.nvmlDeviceGetFanSpeed_v2(h, i) for i in range(pynvml.nvmlDeviceGetNumFans(h)))
+        except Exception:
+            return pynvml.nvmlDeviceGetFanSpeed(h)
+    except Exception:
+        return None
+
+
 def _s(v):
     return v.decode() if isinstance(v, bytes) else v
 
@@ -73,6 +87,7 @@ class GpuSampler:
         self.peak_mb = 0.0
         self.peak_temp_c: int | None = None
         self.peak_power_w: float | None = None
+        self.peak_fan_pct: int | None = None
         self.samples_util: list[float] = []
         self.samples_power: list[float] = []
         self._stop = threading.Event()
@@ -101,6 +116,9 @@ class GpuSampler:
                 self.peak_power_w = max(self.peak_power_w or 0.0, w)
                 t = pynvml.nvmlDeviceGetTemperature(self._h, pynvml.NVML_TEMPERATURE_GPU)
                 self.peak_temp_c = max(self.peak_temp_c or 0, t)
+                f = fan_percent(self.index)
+                if f is not None:
+                    self.peak_fan_pct = max(self.peak_fan_pct or 0, f)
             except Exception:
                 pass
             time.sleep(self.interval)

@@ -145,7 +145,7 @@ def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens:
                 if governor:
                     governor.after_request(wave_tok, wave_s, on_rest=lambda sec: log(
                         f"                     resting {sec:.0f}s ({governor.name} governor: GPU "
-                        f"{gpu.temperature_c()}C / {gpu.power_w() or 0:.0f} W)"))
+                        f"{gpu.temperature_c()}C / {gpu.power_w() or 0:.0f} W / fans {gpu.fan_percent()}%)"))
     finally:
         if pool:
             pool.shutdown(wait=True)
@@ -160,7 +160,7 @@ def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens:
         "ci95": 100 * 1.96 * (var / n) ** 0.5 if n > 1 else 0.0,
         "wins": wins, "elapsed_s": elapsed, "output_tokens": out_tokens, "parallel": parallel,
         "energy_j": energy_j, "avg_power_w": s.avg_power_w,
-        "peak_power_w": s.peak_power_w, "peak_temp_c": s.peak_temp_c,
+        "peak_power_w": s.peak_power_w, "peak_temp_c": s.peak_temp_c, "peak_fan_pct": s.peak_fan_pct,
         "wh_per_win": (energy_j / 3600 / wins) if energy_j and wins else None,
         "extra": cat.summarize(records),
         "records": records,

@@ -31,6 +31,7 @@ except Exception:  # pragma: no cover
     pynvml = None
 
 APPROACH_BAND = 5
+FAN_BAND = 10  # fan %: start easing off this far below the fan ceiling
 FLOOR = 0.15
 
 
@@ -52,6 +53,7 @@ class ProfileSpec:
     keep_alive_secs: int | None
     power_budget: PowerBudget | None
     adaptive: bool = False  # full speed; rest only in proportion to thermal/power pressure
+    fan_ceiling_pct: int | None = None  # keep the GPU fans at or below this speed (noise, not heat)
 
     @property
     def gpu_power_cap_watts(self) -> float | None:
@@ -59,10 +61,10 @@ class ProfileSpec:
 
 
 PROFILES = {
-    # LocalBench default: like adaptive, but with a lower power cap (220 W on a 3090) and a 70C ceiling.
-    # Token generation is limited by memory bandwidth, so the cap costs little speed but keeps the
-    # card far cooler - and the fans far quieter - than running at its full 350-450 W.
-    "quiet": ProfileSpec("quiet", None, 70, 300, PowerBudget(370.0, 150.0), adaptive=True),
+    # LocalBench default: like adaptive, but with a lower power cap (220 W on a 3090), a 70C ceiling and
+    # a fan ceiling: it rests whenever the fans pass 45%, whatever the cause, so the noise stays low.
+    # Token generation is limited by memory bandwidth, so the cap costs little speed.
+    "quiet": ProfileSpec("quiet", None, 70, 300, PowerBudget(370.0, 150.0), adaptive=True, fan_ceiling_pct=45),
     # full speed while cool, backs off only under heat/power pressure
     "adaptive": ProfileSpec("adaptive", None, 75, 300, PowerBudget(450.0, 150.0), adaptive=True),
     # the Ocadox presets, unchanged
@@ -93,6 +95,15 @@ def load_for_temperature(current_c: int, ceiling_c: int) -> float:
     return min(max(0.5 / (1.0 + past / 4.0), FLOOR), 0.5)
 
 
+def load_for_fan(current_pct: int, ceiling_pct: int) -> float:
+    """Like load_for_temperature, on fan speed: 1.0 well below the ceiling, 0.5 at it, harder past it."""
+    if current_pct + FAN_BAND < ceiling_pct:
+        return 1.0
+    if current_pct <= ceiling_pct:
+        return min(max(1.0 - 0.5 * (current_pct - (ceiling_pct - FAN_BAND)) / FAN_BAND, 0.5), 1.0)
+    return min(max(0.5 / (1.0 + (current_pct - ceiling_pct) / 8.0), FLOOR), 0.5)
+
+
 def load_for_power(gpu_watts: float, allowance_watts: float) -> float:
     if gpu_watts <= allowance_watts or gpu_watts <= 0.0:
         return 1.0
@@ -106,9 +117,10 @@ class Pacer:
         self.emitted = 0
         self.thermal_load = 1.0
         self.power_load = 1.0
+        self.fan_load = 1.0
 
     def load(self) -> float:
-        return min(self.thermal_load, self.power_load)
+        return min(self.thermal_load, self.power_load, self.fan_load)
 
     def effective_rate(self) -> float | None:
         if self.spec.tokens_per_second is None:
@@ -120,6 +132,12 @@ class Pacer:
             self.thermal_load = 1.0
         elif current_c is not None:  # a missing sensor keeps the last known load
             self.thermal_load = load_for_temperature(current_c, self.spec.temperature_ceiling_c)
+
+    def observe_fan(self, pct: int | None):
+        if self.spec.fan_ceiling_pct is None:
+            self.fan_load = 1.0
+        elif pct is not None:
+            self.fan_load = load_for_fan(pct, self.spec.fan_ceiling_pct)
 
     def observe_power(self, gpu_watts: float | None):
         if self.spec.power_budget is None:
@@ -216,6 +234,7 @@ class Governor:
     """Drives a Pacer from live readings between requests and keeps the quiet-mode scoreboard."""
 
     MAX_COOLDOWN_S = 60.0
+    MAX_FAN_WAIT_S = 120.0
     SAFETY_COOLDOWN_S = 180.0
 
     def __init__(self, profile: str = "turbo", pace: bool = True, max_temp_c: int | None = 80):
@@ -245,6 +264,7 @@ class Governor:
         t, w = gpu.temperature_c(), gpu.power_w()
         self.pacer.observe_temperature(t)
         self.pacer.observe_power(w)
+        self.pacer.observe_fan(gpu.fan_percent())
         return t, w
 
     def _safety_stop(self):
@@ -263,9 +283,24 @@ class Governor:
         self.safety_pauses += 1
         self.cooldown_s += time.perf_counter() - t0
 
+    def _wait_for_fans(self):
+        """Quiet profiles: if the fans are past their ceiling, let them spin down before the next request."""
+        ceiling = self.spec.fan_ceiling_pct
+        f = gpu.fan_percent()
+        if ceiling is None or f is None or f <= ceiling:
+            return
+        print(f"                     fans at {f}% (quiet limit {ceiling}%) - waiting for them to slow down")
+        self.throttle_events += 1
+        t0 = time.perf_counter()
+        while f is not None and f > ceiling - FAN_BAND and time.perf_counter() - t0 < self.MAX_FAN_WAIT_S:
+            time.sleep(2.0)
+            f = gpu.fan_percent()
+        self.cooldown_s += time.perf_counter() - t0
+
     def before_request(self):
         """Hard safety stop, then profile thermal back-off: past the ceiling, wait (bounded) for the band."""
         self._safety_stop()
+        self._wait_for_fans()
         ceiling = self.spec.temperature_ceiling_c
         if ceiling is None:
             return
@@ -301,7 +336,7 @@ class Governor:
 
     def summary(self) -> dict:
         return {"profile": self.spec.name, "target_tps": self.spec.tokens_per_second,
-                "temp_ceiling_c": self.spec.temperature_ceiling_c,
+                "temp_ceiling_c": self.spec.temperature_ceiling_c, "fan_ceiling_pct": self.spec.fan_ceiling_pct,
                 "gpu_cap_requested_w": self.spec.gpu_power_cap_watts, "cap": self.cap.outcome,
                 "cap_applied_w": self.cap.applied_watts, "paced_s": round(self.paced_s, 1),
                 "cooldown_s": round(self.cooldown_s, 1), "throttle_events": self.throttle_events,

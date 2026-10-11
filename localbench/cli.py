@@ -148,7 +148,8 @@ def cmd_models(a):
         pace = "full speed, rests only under heat/power pressure" if p.adaptive else \
             f"pace {p.tokens_per_second or 'off'} tok/s"
         print(f"  {name:<9} {pace}, ceiling {p.temperature_ceiling_c or 'none'}C, "
-              f"GPU cap {p.gpu_power_cap_watts or 'none'} W")
+              f"GPU cap {p.gpu_power_cap_watts or 'none'} W"
+              + (f", fans kept under {p.fan_ceiling_pct}%" if p.fan_ceiling_pct else ""))
     st = cap_status()
     print(f"  power cap settable from this shell: {st.get('can_set')} (needs an administrator terminal)")
     print("\nCategories:")
@@ -215,7 +216,8 @@ def _bench(spec, a, cats):
                 r = run_category(b, registry()[name], a.limit, a.max_tokens, on_record=keep_ui,
                                  governor=gov, num_ctx=ctx, parallel=slots)
                 print(f"  => {r['title']}: {r['score']:.1f} +/- {r['ci95']:.1f}  ({r['wins']}/{r['n']} solved, "
-                      f"{r['elapsed_s']:.0f}s, peak {r['peak_temp_c']}C / {r['peak_power_w'] or 0:.0f} W)")
+                      f"{r['elapsed_s']:.0f}s, peak {r['peak_temp_c']}C / {r['peak_power_w'] or 0:.0f} W / fans "
+                      f"{r.get('peak_fan_pct')}%)")
                 results.append(r)
         info = b.info()
     except Exception as e:
