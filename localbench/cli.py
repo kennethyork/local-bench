@@ -301,15 +301,16 @@ def cmd_run(a):
 
     run_compatible(todo, a, run_one)
     _report(a)
-    if a.publish:
+    if a.publish or a.push:
         cmd_publish(argparse.Namespace(out="docs", kwh_price=a.kwh_price, full_system=False,
-                                       no_responses=False, no_gallery=False, open=False))
+                                       no_responses=False, no_gallery=False, open=False, push=a.push))
 
 
 def cmd_library(a):
     from . import library
     cats = _cats(a)
     a.need_ctx = needed_ctx(a, not a.no_speed)
+    a.publish = a.publish or a.push
     cycle = 0
     try:
         while True:
@@ -325,7 +326,7 @@ def cmd_library(a):
                     rebuild_fn=lambda: report.build(kwh_price=a.kwh_price),
                     publish_fn=lambda: cmd_publish(argparse.Namespace(
                         out="docs", kwh_price=a.kwh_price, full_system=False, no_responses=False,
-                        no_gallery=False, open=False)))
+                        no_gallery=False, open=False, push=a.push)))
             except Exception as e:
                 if not a.forever:
                     raise
@@ -391,6 +392,36 @@ def cmd_governor(a):
     _report(a)
 
 
+def push_site(out_dir: Path) -> bool:
+    """Commit the published folder and push it, so GitHub Pages (local-bench.com) goes live.
+    Only that folder is committed; anything else staged or changed is left alone. Never raises:
+    a failed push just leaves the commit local, and the next push sends it along."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=out_dir.parent, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=300, stdin=subprocess.DEVNULL)
+    try:
+        if (r := git("add", "-A", "--", out_dir.name)).returncode:
+            print(f"  Not pushed: git add failed ({r.stderr.strip()})")
+            return False
+        if not git("diff", "--cached", "--quiet", "--", out_dir.name).returncode:
+            print("  Not pushed: the site hasn't changed since the last push")
+            return True
+        msg = f"Republish the dashboard ({time.strftime('%Y-%m-%d %H:%M')})"
+        if (r := git("commit", "-m", msg, "--", out_dir.name)).returncode:
+            print(f"  Not pushed: git commit failed ({(r.stderr or r.stdout).strip()})")
+            return False
+        if (r := git("push")).returncode:
+            print(f"  Committed but not pushed ({r.stderr.strip()}); the next push will send it")
+            return False
+        print(f"  Pushed {out_dir.name}/ - the live site updates in a minute or two")
+        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  Not pushed: {e}")
+        return False
+
+
 def cmd_publish(a):
     """Write a static copy of the dashboard for GitHub Pages (or any static host)."""
     out_dir = Path(a.out)
@@ -403,6 +434,8 @@ def cmd_publish(a):
                             ("model responses", not a.no_responses), ("UI gallery pages", not a.no_gallery)) if on]
     print(f"Published {page} ({page.stat().st_size / 1024:.0f} KB)")
     print(f"  includes: {', '.join(kept)}")
+    if getattr(a, "push", False):
+        push_site(out_dir)
     print(f"  next: commit and push '{out_dir.name}/', then set GitHub Settings > Pages > "
           f"Deploy from branch > main /{out_dir.name}")
     if a.open:
@@ -498,6 +531,7 @@ def main(argv=None):
     sp.add_argument("--no-speed", action="store_true", help="skip the speed test")
     sp.add_argument("--redo", action="store_true", help="rerun models that already have results")
     sp.add_argument("--publish", action="store_true", help="refresh docs/index.html for GitHub Pages when done")
+    sp.add_argument("--push", action="store_true", help="like --publish, then commit and push docs/ so the site goes live")
     sp.set_defaults(fn=cmd_run)
 
     sp = sub.add_parser("library", help="benchmark every Ollama library model that fits this GPU (resumable)")
@@ -510,6 +544,7 @@ def main(argv=None):
     sp.add_argument("--no-speed", action="store_true", help="skip the speed test")
     sp.add_argument("--redo", action="store_true", help="rerun models that already have results")
     sp.add_argument("--publish", action="store_true", help="refresh docs/ every 5 models and at the end")
+    sp.add_argument("--push", action="store_true", help="like --publish, and commit and push docs/ each time")
     sp.add_argument("--dry-run", action="store_true", help="list what would be downloaded and tested, then stop")
     sp.add_argument("--refresh", action="store_true", help="re-read the library catalog from ollama.com")
     sp.add_argument("--family", help="only these families, comma list (e.g. qwen3,gemma3)")
@@ -545,6 +580,7 @@ def main(argv=None):
                     help="include OS, CPU, RAM, Python and driver versions (default: GPU + runtimes only)")
     sp.add_argument("--no-responses", action="store_true", help="leave out raw model responses")
     sp.add_argument("--no-gallery", action="store_true", help="leave out the generated UI pages")
+    sp.add_argument("--push", action="store_true", help="commit and push the output folder so the site goes live")
     sp.add_argument("--open", action="store_true")
     sp.set_defaults(fn=cmd_publish)
 

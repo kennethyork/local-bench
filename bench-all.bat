@@ -1,6 +1,6 @@
 @echo off
 rem Benchmark every local Ollama model from ollama.com that's compatible with this GPU,
-rem then refresh the GitHub Pages copy (docs\).
+rem then refresh the GitHub Pages copy (docs\) and push it live to local-bench.com.
 rem
 rem   bench-all.bat              continuous benchmarking of the ollama.com library: pull -> test -> delete,
 rem                              one model at a time (models you already have are reused, never deleted).
@@ -44,12 +44,12 @@ if "%MODE%"=="once" (set "MODE=library" & set "FOREVER=")
 if not "%MODE%"=="library" (
   echo.
   echo ===== Installed models =====
-  "%PY%" -m localbench run --publish %ARGS%
+  "%PY%" -m localbench run --push %ARGS%
 )
 if not "%MODE%"=="mine" (
   echo.
   echo ===== ollama.com library =====
-  "%PY%" -m localbench library --publish %FOREVER% %ARGS%
+  "%PY%" -m localbench library --push %FOREVER% %ARGS%
 )
 
 echo.

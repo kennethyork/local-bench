@@ -25,6 +25,7 @@ Options pass through, e.g. `bench-all.bat --governor balanced`, `bench-all.bat -
 .\.venv\Scripts\python -m localbench speed                        # speed / VRAM only
 .\.venv\Scripts\python -m localbench governor -m llama3.2:1b      # silent vs balanced vs turbo
 .\.venv\Scripts\python -m localbench publish                      # docs/index.html for GitHub Pages
+.\.venv\Scripts\python -m localbench publish --push               # ...then commit + push docs/ (live on local-bench.com)
 .\.venv\Scripts\python -m localbench report --open                # rebuild results/report.html
 ```
 
@@ -39,7 +40,7 @@ Options pass through, e.g. `bench-all.bat --governor balanced`, `bench-all.bat -
 - **One model at a time:** each model is pulled, fit-checked, benchmarked, then **deleted**, so only one is on disk at a time. Models you already had are never deleted; tags with the same weights as one of yours reuse your copy and its results. `--keep` keeps everything instead.
 - **Resumable:** close the window whenever you like. Progress is saved in `results/library_state.json` and the next launch continues from there. `--retry-failed` retries models that failed.
 - **Benchmarked once = done:** a model with a saved speed test and every category is never benchmarked again, even if you change settings like `--limit`. A model that was interrupted halfway only finishes its missing parts. To force a rerun, add `--redo`, e.g. `bench-all.bat --redo` or `bench-all.bat --family qwen3 --redo`.
-- **Sleep and publishing:** the PC is kept awake while it runs, and `docs/` is refreshed every 5 models.
+- **Sleep and publishing:** the PC is kept awake while it runs, and `docs/` is refreshed, committed and pushed every 5 models, so local-bench.com stays current. A failed push (offline, no credentials) leaves the commit local and doesn't stop the run. Running `localbench run` or `library` yourself only pushes with `--push`.
 - **How long it takes:** with the default quiet governor it's limited mostly by each model's own speed and the download time, and it only slows when the GPU runs hot. Silent mode (`-g silent`) can stretch it to weeks. Use `--dry-run` to see the plan, or `--family qwen3,gemma3` / `--max-models 20` to do a slice.
 
 ## Protecting the GPU
