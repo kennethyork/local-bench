@@ -237,11 +237,33 @@ def is_pulled(name: str) -> bool:
     return name.lower() in names or f"{name}:latest".lower() in names
 
 
+PULL_STALL_S = 300  # no progress line from Ollama for this long = the download is stuck
+PULL_ATTEMPTS = 5
+
+
 def pull(tag: str, log=print, base: str | None = None) -> None:
-    """Pull a model from the Ollama library, printing sparse progress. `base` overrides the server."""
-    r = requests.post(f"{base or url()}/api/pull", json={"model": tag, "stream": True}, stream=True, timeout=None)
+    """Pull a model from the Ollama library, printing sparse progress. `base` overrides the server.
+    A stalled or dropped download is retried; Ollama resumes from the parts it already has."""
+    for attempt in range(1, PULL_ATTEMPTS + 1):
+        try:
+            if _pull_once(tag, log, base):
+                return
+            why = "the download ended before it finished"
+        except (requests.exceptions.RequestException, RuntimeError, ValueError) as e:
+            why = str(e)[:200] or type(e).__name__
+        if attempt == PULL_ATTEMPTS:
+            raise RuntimeError(f"download of {tag} failed {PULL_ATTEMPTS} times: {why}")
+        log(f"    download interrupted ({why}) - resuming, attempt {attempt + 1}/{PULL_ATTEMPTS}")
+        time.sleep(5 * attempt)
+
+
+def _pull_once(tag: str, log, base: str | None) -> bool:
+    """One pull request. True once Ollama reports success; raises on an error or a stall."""
+    r = requests.post(f"{base or url()}/api/pull", json={"model": tag, "stream": True}, stream=True,
+                      timeout=(10, PULL_STALL_S))  # read timeout: a silent stream raises instead of hanging
     r.raise_for_status()
     last_pct, last_status = -10, None
+    done, moved = {}, time.monotonic()  # bytes per layer; when the total last grew
     for line in r.iter_lines():
         if not line:
             continue
@@ -249,6 +271,13 @@ def pull(tag: str, log=print, base: str | None = None) -> None:
         if d.get("error"):
             raise RuntimeError(d["error"])
         st = d.get("status", "")
+        if d.get("completed") is not None:
+            if d["completed"] > done.get(d.get("digest", st), -1):
+                done[d.get("digest", st)] = d["completed"]
+                moved = time.monotonic()
+            elif time.monotonic() - moved > PULL_STALL_S:
+                r.close()
+                raise RuntimeError(f"no progress for {PULL_STALL_S // 60} minutes")
         if d.get("total") and d.get("completed") is not None:
             pct = int(100 * d["completed"] / d["total"])
             if pct >= last_pct + 25:
@@ -257,6 +286,7 @@ def pull(tag: str, log=print, base: str | None = None) -> None:
         elif st != last_status and not st.startswith("pulling "):
             log(f"    {st}")
         last_status = st
+    return last_status == "success"
 
 
 def not_benchmarkable(name: str, entry: dict | None = None) -> str | None:
