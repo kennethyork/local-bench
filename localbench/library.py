@@ -190,9 +190,17 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         log("Ollama isn't running. Start it and run this again.")
         return
     st = load_state()
-    for tag in st.get("to_delete", []):  # cleanups that failed last time (server was down)
-        if delete(tag, log):
+    ours = st.setdefault("ours", [])  # models LocalBench downloaded and hasn't deleted yet (never yours)
+    for tag in list(st.get("to_delete", [])):  # cleanups that failed last time (server was down)
+        if not done_fn(f"ollama:{tag}") and not a.redo:
+            st["to_delete"].remove(tag)  # downloaded but not tested yet (prefetched, or a run was stopped):
+            if tag not in ours:          # keep it for its turn instead of downloading it all over again
+                ours.append(tag)
+        elif delete(tag, log):
             st["to_delete"].remove(tag)
+            if tag in ours:
+                ours.remove(tag)
+    save_state(st)
     local = list_ollama_models()
     installed = {m["name"] for m in local}
     by_digest = {m.get("digest", "")[:12]: m["name"] for m in local}  # same weights under another tag
@@ -260,8 +268,8 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
             requests.get(f"{OLLAMA_URL}/api/version", timeout=3).raise_for_status()
         except requests.RequestException:
             return  # normal Ollama server not running: download normally when it's this model's turn
-        if ntag not in st.setdefault("to_delete", []):  # if the run is interrupted, clean it up next time
-            st["to_delete"].append(ntag)
+        if ntag not in ours:  # ours until it's tested, then deleted like any downloaded model
+            ours.append(ntag)
             save_state(st)
 
         def bg():
@@ -282,7 +290,8 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         log(f"\n===== {header} {t['tag']} ({t['size_gb']} GB)" + (f" = your {tag}" if tag != t["tag"] else "") + " =====")
         rec = st["models"].setdefault(t["tag"], {})
         rec.update({"size_gb": t["size_gb"], "started": datetime.now().isoformat(timespec="seconds"), "ran_as": tag})
-        had_it = tag in installed or tag in keep
+        had_it = tag in keep or (tag in installed and tag not in ours)
+        interrupted = False
         if done_fn(label) and not a.redo:
             rec.update(status="done", reason="results already saved")
             save_state(st)
@@ -301,6 +310,9 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
                 if not is_pulled(tag):
                     if models_dir_free_gb() < (t["size_gb"] or 0) + 5:
                         raise RuntimeError(f"not enough disk space for {t['size_gb']} GB (keeping 5 GB spare)")
+                    if tag not in ours:
+                        ours.append(tag)
+                        save_state(st)
                     log("  pulling ...")
                     pull(tag, log)
                 if tag in st.get("to_delete", []):  # it's this model's turn now; the finally below cleans it up
@@ -329,6 +341,7 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
             rec.update(status="done", finished=datetime.now().isoformat(timespec="seconds"))
         except KeyboardInterrupt:
             rec.update(status="pending", reason="interrupted")
+            interrupted = True
             save_state(st)
             raise
         except Exception as e:
@@ -339,9 +352,13 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
                 rec.update(status="failed", reason=str(e)[:300])
                 log(f"  FAILED: {e}")
         finally:
-            if not had_it and "*" not in keep:
+            if interrupted and not had_it:
+                log("  stopped - keeping the download for next time")
+            elif not had_it and "*" not in keep:
                 if delete(tag, log):
                     log("  deleted (wasn't one of your models)")
+                    if tag in ours:
+                        ours.remove(tag)
                 elif tag not in st.setdefault("to_delete", []):
                     st["to_delete"].append(tag)
             save_state(st)
