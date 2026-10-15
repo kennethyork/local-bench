@@ -176,6 +176,9 @@ def keep_awake(on: bool):
         pass
 
 
+PREFETCH_AHEAD = 3  # models downloaded in the background while one is tested
+
+
 def run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, log=print):
     if not a.dry_run:
         keep_awake(True)
@@ -252,17 +255,25 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         free_b = fit.free_budget_mb(a.vram_headroom)
         return free_b is None or need_mb <= free_b
 
-    prefetch: dict[str, threading.Thread] = {}  # tag -> background download of the NEXT model
+    prefetch: dict[str, threading.Thread] = {}  # tag -> background download of an upcoming model
+    sizes: dict[str, float] = {}
 
-    def start_prefetch(nt, current_gb: float):
-        """Download the next model while this one is benchmarked (via your normal Ollama server,
-        which doesn't restart between models). Skipped when it wouldn't be needed or the disk is short; downloading needs no VRAM."""
-        if nt is None or a.no_prefetch:
+    def start_prefetch(upcoming: list, current_gb: float):
+        """Download the next few models while this one is benchmarked (via your normal Ollama server,
+        which doesn't restart between models). The registry's speed varies a lot from file to file, so
+        several downloads at once fill the connection far better than one. Skipped for models already
+        here or done, and when the disk is short; downloading needs no VRAM."""
+        if a.no_prefetch:
             return
+        for nt in upcoming[:PREFETCH_AHEAD]:
+            start_one(nt, current_gb)
+
+    def start_one(nt, current_gb: float):
         ntag = by_digest.get(nt["digest"], nt["tag"])
         if ntag in installed or ntag in keep or ntag in prefetch or (done_fn(f"ollama:{ntag}") and not a.redo):
             return
-        if models_dir_free_gb() < (nt["size_gb"] or 0) + current_gb + 5:
+        pending_gb = sum(sizes.get(t, 0) for t, th in prefetch.items() if th.is_alive())
+        if models_dir_free_gb() < (nt["size_gb"] or 0) + pending_gb + current_gb + 5:
             return
         try:
             requests.get(f"{OLLAMA_URL}/api/version", timeout=3).raise_for_status()
@@ -271,6 +282,7 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         if ntag not in ours:  # ours until it's tested, then deleted like any downloaded model
             ours.append(ntag)
             save_state(st)
+        sizes[ntag] = nt["size_gb"] or 0
 
         def bg():
             try:
@@ -281,9 +293,9 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
         th = threading.Thread(target=bg, daemon=True)
         th.start()
         prefetch[ntag] = th
-        log(f"  downloading the next model in the background: {ntag} ({nt['size_gb']} GB)")
+        log(f"  downloading in the background: {ntag} ({nt['size_gb']} GB)")
 
-    def process(t, header: str, nxt=None) -> str:
+    def process(t, header: str, nxt=()) -> str:
         """Pull -> check -> benchmark -> clean up one model. Returns its final status."""
         tag = by_digest.get(t["digest"], t["tag"])  # reuse your copy (and its results) if you have it
         label = f"ollama:{tag}"
@@ -331,7 +343,7 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
                 rec.update(status="deferred", reason=f"other apps held {fit.other_apps_gb():.1f} GB of VRAM")
                 log(f"  deferred: needs ~{f.need_mb / 1024:.1f} GB, other apps hold {fit.other_apps_gb():.1f} GB")
                 return "deferred"
-            start_prefetch(nxt, t["size_gb"] or 0)  # overlap the next download with this benchmark
+            start_prefetch(list(nxt), t["size_gb"] or 0)  # overlap the next downloads with this benchmark
             ok = speed_fn(label) if not a.no_speed else True
             if not ok:
                 raise RuntimeError("speed test failed (see log above)")
@@ -367,7 +379,7 @@ def _run_library(a, cats, speed_fn, bench_fn, done_fn, rebuild_fn, publish_fn, l
 
     deferred = []
     for i, t in enumerate(compatible, 1):
-        status = process(t, f"library [{i}/{len(compatible)}]", compatible[i] if i < len(compatible) else None)
+        status = process(t, f"library [{i}/{len(compatible)}]", compatible[i:i + PREFETCH_AHEAD])
         if status == "deferred":
             deferred.append(t)
         elif status == "pending" and not ensure_ollama(log=log):

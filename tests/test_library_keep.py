@@ -14,7 +14,7 @@ class FakeOllama:
     def list(self):
         return [{"name": n, "digest": "d" + n} for n in self.installed]
 
-    def pull(self, tag, log=None):
+    def pull(self, tag, log=None, base=None):
         self.pulled.append(tag)
         self.installed.add(tag)
 
@@ -25,11 +25,11 @@ class FakeOllama:
 
 
 class LibraryKeep(unittest.TestCase):
-    def run_lib(self, state, installed, queue, bench, done=()):
+    def run_lib(self, state, installed, queue, bench, done=(), prefetch=False):
         o = FakeOllama(installed)
         done = set(done)
         a = argparse.Namespace(vram_headroom=0.92, refresh=False, family=None, max_models=None, dry_run=False,
-                               keep=False, redo=False, retry_failed=False, no_prefetch=True, no_speed=True,
+                               keep=False, redo=False, retry_failed=False, no_prefetch=not prefetch, no_speed=True,
                                need_ctx=8192, publish=False)
         q = [{"tag": t, "digest": "q" + t, "size_gb": 1.0, "prefits": True, "inputs": "Text"} for t in queue]
 
@@ -52,7 +52,7 @@ class LibraryKeep(unittest.TestCase):
                 mock.patch.object(library, "models_dir_free_gb", lambda: 999.0), \
                 mock.patch.object(library.fit, "gpu_budget_mb", lambda h: 20000), \
                 mock.patch.object(library.fit, "free_budget_mb", lambda h: 20000), \
-                mock.patch.object(library.fit, "estimate", lambda *x: fit_ok):
+                mock.patch.object(library.fit, "estimate", lambda *x: fit_ok),                 mock.patch.object(library.requests, "get", lambda *x, **k: mock.Mock(raise_for_status=lambda: None)):
             try:
                 library._run_library(a, ["codegen"], speed_fn=lambda l: True, bench_fn=bench_fn,
                                      done_fn=lambda l: l in done, rebuild_fn=lambda: None, publish_fn=lambda: None,
@@ -89,6 +89,26 @@ class LibraryKeep(unittest.TestCase):
         self.assertEqual(o.pulled, [])                     # waiting:7b reused, not downloaded again
         self.assertIn("waiting:7b", o.deleted)             # ...and deleted once tested
         self.assertNotIn("mine:7b", o.deleted)
+
+
+    def test_downloads_three_ahead_and_cleans_up(self):
+        seen = []
+
+        def bench(label):  # what is already downloaded when each model is tested
+            seen.append((label[7:], sorted(t for t in o_ref[0].installed if t != "mine:7b")))
+        o_ref = [None]
+        orig = FakeOllama.__init__
+
+        def init(self, installed):
+            orig(self, installed)
+            o_ref[0] = self
+        with mock.patch.object(FakeOllama, "__init__", init):
+            o, st = self.run_lib(self.state(), ["mine:7b"], ["m1", "m2", "m3", "m4", "m5"], bench=bench, prefetch=True)
+        self.assertEqual(seen[0], ("m1", ["m1", "m2", "m3", "m4"]))  # testing m1 while m2..m4 download
+        self.assertEqual(sorted(o.pulled), ["m1", "m2", "m3", "m4", "m5"])  # each downloaded once
+        self.assertEqual(sorted(o.deleted), ["m1", "m2", "m3", "m4", "m5"])  # all deleted after testing
+        self.assertNotIn("mine:7b", o.deleted)
+        self.assertEqual(st["ours"], [])
 
 
 if __name__ == "__main__":
