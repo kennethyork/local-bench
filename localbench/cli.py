@@ -9,7 +9,7 @@ from pathlib import Path
 from . import fit, perf, report
 from .backends import ensure_ollama, list_ollama_models, make_backend, not_benchmarkable, ollama_entry, ollama_name
 from .categories import DEFAULT, registry, run_category
-from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status, restore_leftover_limit
+from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status, reset_low_limit, restore_leftover_limit
 from .server import PORT as PRIVATE_PORT
 from .server import PRIVATE, kill_orphan_runners, kill_stale_private, unload_all
 from .util import RESULTS, load_all, save, slug
@@ -566,6 +566,8 @@ def main(argv=None):
     try:
         if a.cmd in ("run", "library", "speed", "governor") and not getattr(a, "dry_run", False):
             restore_leftover_limit()  # a closed window can leave the GPU at a lowered power limit
+            if getattr(a, "governor", None) == "fast":
+                reset_low_limit()  # full speed means the card's full default limit, whatever was left set
             kill_stale_private()   # a private server left by a closed window would hold the port + a model
             kill_orphan_runners()  # leftovers from killed servers silently eat VRAM
         if getattr(a, "parallel", 1) > 1 and a.cmd in ("run", "library", "speed") and not getattr(a, "dry_run", False):

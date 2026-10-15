@@ -272,6 +272,21 @@ def restore_leftover_limit(log=print) -> None:
         pass  # not admin: leave the file for an elevated run
 
 
+def reset_low_limit(index: int = 0, log=print) -> None:
+    """Full-speed runs: a power limit below the card's default (left by an earlier capped run that was
+    closed, or another tool) would throttle everything. Put the default back. Needs administrator."""
+    if pynvml is None or not gpu.available():
+        return
+    try:
+        h = pynvml.nvmlDeviceGetHandleByIndex(index)
+        cur, default = pynvml.nvmlDeviceGetPowerManagementLimit(h), pynvml.nvmlDeviceGetPowerManagementDefaultLimit(h)
+        if cur < default:
+            pynvml.nvmlDeviceSetPowerManagementLimit(h, default)
+            log(f"GPU power limit was {cur / 1000:.0f} W, below the card's default - reset to {default / 1000:.0f} W")
+    except Exception:
+        pass  # not administrator
+
+
 def cap_status(index: int = 0) -> dict:
     """Board limits and whether this process may change them (probe = re-set current value)."""
     if pynvml is None or not gpu.available():
