@@ -4,35 +4,45 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LocalBench Leaderboard</title>
+<meta name="description" content="Local AI, measured. Every Ollama model that fits one RTX 3090, scored by running its code against tests, with energy per correct answer.">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&display=swap">
 <style>
 :root {
   color-scheme: light;
-  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #6f6d68;
-  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --wash: rgba(11,11,11,0.04);
-  --bar: #2a78d6; --bar-soft: #cde2fb; --accent: #2a78d6; --good: #006300;
-  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300;
+  --page: #f6f8fa; --surface: #ffffff; --ink: #0a0c10; --ink-2: #3d4653; --muted: #66707f;
+  --grid: #e2e7ee; --axis: #c4ccd6; --border: rgba(10,12,16,0.10); --wash: rgba(10,12,16,0.04);
+  --bar: #0d9488; --bar-soft: #ccfbf1; --accent: #0d9488; --good: #047857; --bad: #dc2626;
+  --s1:#0d9488; --s2:#d97706; --s3:#7c3aed; --s4:#e11d48; --s5:#2563eb; --s6:#059669;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a988f;
-    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-    --bar: #3987e5; --bar-soft: #184f95; --accent: #3987e5; --good: #0ca30c;
-    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300;
+  --page: #0a0c10; --surface: #11141a; --ink: #e7ebf1; --ink-2: #b8c0cc; --muted: #8b95a5;
+  --grid: #1d222b; --axis: #2a313c; --border: rgba(231,235,241,0.10); --wash: rgba(231,235,241,0.05);
+  --bar: #5eead4; --bar-soft: #134e4a; --accent: #5eead4; --good: #34d399; --bad: #f87171;
+  --s1:#5eead4; --s2:#fbbf24; --s3:#a78bfa; --s4:#fb7185; --s5:#60a5fa; --s6:#34d399;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a988f;
-  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-  --bar: #3987e5; --bar-soft: #184f95; --accent: #3987e5; --good: #0ca30c;
-  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300;
+  --page: #0a0c10; --surface: #11141a; --ink: #e7ebf1; --ink-2: #b8c0cc; --muted: #8b95a5;
+  --grid: #1d222b; --axis: #2a313c; --border: rgba(231,235,241,0.10); --wash: rgba(231,235,241,0.05);
+  --bar: #5eead4; --bar-soft: #134e4a; --accent: #5eead4; --good: #34d399; --bad: #f87171;
+  --s1:#5eead4; --s2:#fbbf24; --s3:#a78bfa; --s4:#fb7185; --s5:#60a5fa; --s6:#34d399;
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; scroll-padding-top: 72px; }
 body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width: 1100px; margin: 0 auto; padding: 32px 16px 96px; }
 h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.01em; }
+h1 .tag { display: block; font: 600 13px/1.4 var(--mono); color: var(--accent); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+footer.site { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 14px;
+  display: flex; flex-wrap: wrap; gap: 6px 20px; justify-content: space-between; }
+footer.site a { color: var(--ink-2); }
+footer.site a:hover { color: var(--accent); }
 h2 { font-size: 22px; margin: 56px 0 6px; letter-spacing: -0.01em; }
 .lede { color: var(--ink-2); margin: 0 0 18px; max-width: 680px; }
 .sys { color: var(--muted); font-size: 13.5px; margin: 8px 0 0; }
@@ -59,13 +69,14 @@ nav.jump a:hover { color: var(--ink); text-decoration: underline; }
 .pick:hover { border-color: var(--axis); }
 .pick .label { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
 .pick .name { font-size: 18px; font-weight: 650; margin: 6px 0 2px; word-break: break-word; }
-.pick .value { font-size: 28px; font-weight: 700; }
+.pick .value { font-size: 28px; font-weight: 700; font-family: var(--mono); color: var(--accent); letter-spacing: -0.02em; }
 .pick .unit { font-size: 15px; color: var(--ink-2); font-weight: 500; }
 .pick .sub { color: var(--muted); font-size: 13.5px; }
 
 /* table */
 .tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
 table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+td:not(.l):not(.model) { font-family: var(--mono); font-size: 14.5px; }
 th, td { padding: 11px 14px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--grid); }
 th { color: var(--ink-2); font-weight: 600; font-size: 13.5px; cursor: pointer; user-select: none; }
 th.l, td.l { text-align: left; }
@@ -110,7 +121,7 @@ svg text.val { fill: var(--ink); font-size: 14px; font-weight: 600; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 14px 0 6px; }
 .stat { background: var(--wash); border-radius: 10px; padding: 10px 12px; }
 .stat .k { font-size: 12.5px; color: var(--muted); }
-.stat .v { font-size: 20px; font-weight: 650; }
+.stat .v { font-size: 20px; font-weight: 700; font-family: var(--mono); }
 .catrow { display: grid; grid-template-columns: 150px 1fr 60px; gap: 12px; align-items: center; padding: 6px 0; font-size: 14.5px; }
 .catrow .meter { width: 100%; height: 10px; }
 .misses { margin-top: 14px; }
@@ -118,7 +129,7 @@ svg text.val { fill: var(--ink); font-size: 14px; font-weight: 600; }
 .item { border-top: 1px solid var(--grid); padding: 7px 0; font-size: 14px; }
 .item summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline; list-style: none; }
 .item summary::-webkit-details-marker { display: none; }
-.item .x { color: #d03b3b; font-weight: 700; width: 14px; flex: none; }
+.item .x { color: var(--bad); font-weight: 700; width: 14px; flex: none; }
 .item .id { font-family: ui-monospace, Consolas, monospace; color: var(--ink-2); font-size: 13px; }
 .item .why { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .item pre { white-space: pre-wrap; word-break: break-word; background: var(--wash); border-radius: 8px; padding: 10px 12px; margin: 6px 0 2px; font-size: 12.5px; max-height: 280px; overflow: auto; }
@@ -151,7 +162,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; }
 <main>
   <header class="top">
     <div>
-      <h1>LocalBench</h1>
+      <h1><span class="tag">Local AI, measured</span>LocalBench</h1>
       <p class="lede" style="margin:0">How well local AI models from <a href="https://ollama.com/library" style="color:inherit">ollama.com</a> code, reason and run on one GPU. Every score is measured automatically: code is run against tests, and answers are checked against known results.</p>
       <p class="sys" id="sys"></p>
     </div>
@@ -197,6 +208,10 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; }
   <div class="gallery" id="shots"></div>
   <div class="table-actions"><button class="linkbtn" id="moreshots" hidden>Show more</button></div>
 </main>
+<footer class="site">
+  <span>By <a href="https://github.com/kennethyork">Kenneth York</a>. Every model, one RTX 3090, real numbers.</span>
+  <span>Also made <a href="https://ocadox.com">Ocadox</a>, a local coding agent that keeps your GPU quiet · <a href="https://github.com/kennethyork/local-bench">Source</a></span>
+</footer>
 <div id="tip"></div>
 <script>
 const DATA = /*__DATA__*/null;
