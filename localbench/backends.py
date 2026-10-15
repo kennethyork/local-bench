@@ -237,8 +237,9 @@ def is_pulled(name: str) -> bool:
     return name.lower() in names or f"{name}:latest".lower() in names
 
 
-PULL_STALL_S = 300  # no progress line from Ollama for this long = the download is stuck
+PULL_STALL_S = 60  # no new bytes for this long = a stalled piece; re-requesting gets it a fresh connection
 PULL_ATTEMPTS = 5
+PULL_PROGRESS_S = 15  # print download progress at least this often
 
 
 def pull(tag: str, log=print, base: str | None = None) -> None:
@@ -262,8 +263,9 @@ def _pull_once(tag: str, log, base: str | None) -> bool:
     r = requests.post(f"{base or url()}/api/pull", json={"model": tag, "stream": True}, stream=True,
                       timeout=(10, PULL_STALL_S))  # read timeout: a silent stream raises instead of hanging
     r.raise_for_status()
-    last_pct, last_status = -10, None
+    last_status = None
     done, moved = {}, time.monotonic()  # bytes per layer; when the total last grew
+    shown_at, shown_bytes = time.monotonic(), None  # last progress line, so slow downloads never look frozen
     for line in r.iter_lines():
         if not line:
             continue
@@ -277,12 +279,20 @@ def _pull_once(tag: str, log, base: str | None) -> bool:
                 moved = time.monotonic()
             elif time.monotonic() - moved > PULL_STALL_S:
                 r.close()
-                raise RuntimeError(f"no progress for {PULL_STALL_S // 60} minutes")
+                raise RuntimeError(f"no progress for {PULL_STALL_S} s")
         if d.get("total") and d.get("completed") is not None:
-            pct = int(100 * d["completed"] / d["total"])
-            if pct >= last_pct + 25:
-                log(f"    {st[:30]} {pct}%")
-                last_pct = pct
+            now = time.monotonic()
+            if shown_bytes is None or now - shown_at >= PULL_PROGRESS_S or d["completed"] >= d["total"]:
+                gb, total_gb = d["completed"] / 1e9, d["total"] / 1e9
+                line_ = f"    downloading {gb:.2f} / {total_gb:.2f} GB ({100 * d['completed'] / d['total']:.0f}%)"
+                if shown_bytes is not None and now > shown_at:
+                    mbps = max(d["completed"] - shown_bytes, 0) / 1e6 / (now - shown_at)
+                    left = (d["total"] - d["completed"]) / 1e6 / mbps if mbps > 0.05 else None
+                    if d["completed"] < d["total"]:
+                        line_ += f"  {mbps:.1f} MB/s" + (f", ~{left / 60:.0f} min left" if left else ", no progress")
+                if d["completed"] < d["total"] or shown_bytes is None or shown_bytes < d["total"]:
+                    log(line_)
+                shown_at, shown_bytes = now, d["completed"]
         elif st != last_status and not st.startswith("pulling "):
             log(f"    {st}")
         last_status = st

@@ -65,7 +65,8 @@ class Pull(unittest.TestCase):
 
     def test_no_progress_counts_as_a_stall(self):
         frozen = [{"status": "pulling abc", "digest": "abc", "total": 10, "completed": 5}] * 3
-        t = iter([0.0, 1.0, 400.0, 401.0] + [500.0] * 50)
+        import itertools
+        t = itertools.count(0.0, 200.0)  # every clock read is 200 s later
         with mock.patch.object(backends.time, "monotonic", lambda: next(t)), \
                 mock.patch.object(backends.requests, "post", lambda *a, **k: FakeResponse(frozen)):
             with self.assertRaises(RuntimeError) as e:
