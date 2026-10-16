@@ -13,7 +13,7 @@ rem
 rem Resumable: close the window any time and run it again; finished models are skipped.
 rem Compatible models that don't fit right now because other apps hold VRAM are deferred, not dropped.
 rem Options pass through, e.g.:
-rem   bench-all.bat --governor quiet             (fans kept under 55%%, slower)
+rem   bench-all.bat --governor fast              (full speed, loud fans; the default keeps them under 55%%)
 rem   bench-all.bat --dry-run                    (show the plan only)
 rem   bench-all.bat --family qwen3,gemma3        (only some families)
 setlocal

@@ -67,12 +67,12 @@ class ProfileSpec:
 
 
 PROFILES = {
-    # LocalBench default: full speed. Starts at the card's maximum power limit and never pauses; a watchdog
+    # Full speed. Starts at the card's maximum power limit and never pauses; a watchdog
     # trims the limit only while the GPU is over 72C (and gives it back under 67C), cutting harder the hotter
     # it is, so it stays clear of the 80C hard stop (which pauses until 70C). Power limits need an administrator terminal.
     "fast": ProfileSpec("fast", None, None, 600, PowerBudget(600.0, 150.0), adaptive=True, boost_cap_watts=600.0,
                         never_waits=True, temp_watch_c=72),
-    # As fast as it can go without loud fans. Never rests or waits; it starts at a 170 W
+    # LocalBench default: as fast as it can go without loud fans. Never rests or waits; it starts at a 170 W
     # power cap and a fan watchdog moves the cap (100 W .. the card's maximum) to hold the fans at 55%.
     # Only the 80C hard stop (every profile) can pause it. Power caps need an administrator terminal.
     "quiet": ProfileSpec("quiet", None, None, 300, PowerBudget(320.0, 150.0), adaptive=True, fan_ceiling_pct=55,
@@ -84,7 +84,7 @@ PROFILES = {
     "balanced": ProfileSpec("balanced", 45.0, 75, 300, PowerBudget(450.0, 150.0)),
     "turbo": ProfileSpec("turbo", None, None, 600, None),
 }
-DEFAULT_PROFILE = "fast"
+DEFAULT_PROFILE = "quiet"
 
 
 def rest_for_load(work_s: float, load: float) -> float:
