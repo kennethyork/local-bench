@@ -40,6 +40,10 @@ class Category:
     def grade(self, item: Item, text: str) -> Grade:
         raise NotImplementedError
 
+    def grade_result(self, item: Item, text: str, extra: dict) -> Grade:
+        """Grade with the backend's extras too (tool calls, for the Agent category). Defaults to grade()."""
+        return self.grade(item, text)
+
     def items(self, limit: int | None) -> list[Item]:
         items = self.load()
         random.Random(SEED).shuffle(items)  # same subset for every model -> comparable + pairwise rating
@@ -57,22 +61,31 @@ def registry() -> dict[str, Category]:
     from .reasoning import Knowledge, Reasoning
     from .refactoring import Refactoring
     from .security import Security
+    from .stack import Stack
+    from .agent import Agent
     from .ui import UIGen
 
-    cats = [Debugging(), CodeGen(), Refactoring(), Security(), Hallucination(), UIGen(), Reasoning(), Knowledge(), BackEnd()]
+    cats = [Debugging(), CodeGen(), Refactoring(), Security(), Hallucination(), UIGen(), Reasoning(), Knowledge(), BackEnd(),
+            Stack(), Agent()]
     return {c.name: c for c in cats}
 
 
 DEFAULT = ["debugging", "codegen", "refactoring", "security", "hallucination", "ui", "reasoning"]
 
+# `-c training`: what to watch when fine-tuning a coding model for a Tauri (Rust + TypeScript) agent.
+# Stack and Agent measure the target skills; debugging, codegen and hallucination catch a fine-tune
+# that gains on its own stack by forgetting general coding or by starting to make things up.
+PRESETS = {"training": ["stack", "agent", "debugging", "codegen", "hallucination"]}
 
-def _generate_with_recovery(backend: Backend, messages, max_tokens, num_ctx, log):
+
+def _generate_with_recovery(backend: Backend, messages, max_tokens, num_ctx, log, tools=None):
     """Generate; if the Ollama server died, restart it and retry once, else raise ServerDown."""
     import requests
     # refused/reset connections AND streams cut off mid-answer (server killed while generating)
     dropped = (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError)
+    kw = {"tools": tools} if tools else {}  # only tool categories pass it, so plain backends needn't take it
     try:
-        return backend.generate(messages, max_tokens=max_tokens, temperature=0.0, num_ctx=num_ctx)
+        return backend.generate(messages, max_tokens=max_tokens, temperature=0.0, num_ctx=num_ctx, **kw)
     except dropped:
         if backend.kind != "ollama":
             raise
@@ -81,21 +94,22 @@ def _generate_with_recovery(backend: Backend, messages, max_tokens, num_ctx, log
         if not ensure_ollama(log=log):
             raise ServerDown("Ollama stopped and could not be restarted")
         try:
-            return backend.generate(messages, max_tokens=max_tokens, temperature=0.0, num_ctx=num_ctx)
+            return backend.generate(messages, max_tokens=max_tokens, temperature=0.0, num_ctx=num_ctx, **kw)
         except dropped as e:
             raise ServerDown(f"Ollama keeps dropping the connection: {e}") from e
 
 
 def _answer(backend: Backend, it: Item, mt: int, num_ctx, log):
-    """Generate one answer. Returns (text, output_tokens, error, truncated, seconds)."""
+    """Generate one answer. Returns (text, output_tokens, error, truncated, seconds, extra)."""
     t = time.perf_counter()
     try:
-        r = _generate_with_recovery(backend, it.messages, mt, num_ctx, log)
-        return r.text, r.output_tokens, None, r.extra.get("done_reason") == "length", time.perf_counter() - t
+        r = _generate_with_recovery(backend, it.messages, mt, num_ctx, log, tools=it.payload.get("tools"))
+        return (r.text, r.output_tokens, None, r.extra.get("done_reason") == "length", time.perf_counter() - t,
+                r.extra)
     except ServerDown:
         raise  # abort: a dead server must never be scored as wrong answers
     except Exception as e:
-        return "", 0, str(e)[:200], False, time.perf_counter() - t
+        return "", 0, str(e)[:200], False, time.perf_counter() - t, {}
 
 
 MAX_REST_BASIS_S = 90.0  # a rest is sized from at most this much preceding work (keeps rests bounded)
@@ -122,8 +136,9 @@ def run_category(backend: Backend, cat: Category, limit: int | None, max_tokens:
 
     def work(job):
         it, mt = job
-        text, n_out, err, trunc, item_s = _answer(backend, it, mt, num_ctx, log)
-        return text, n_out, trunc, item_s, (cat.grade(it, text) if not err else Grade(0.0, f"generation error: {err}"))
+        text, n_out, err, trunc, item_s, extra = _answer(backend, it, mt, num_ctx, log)
+        return text, n_out, trunc, item_s, (cat.grade_result(it, text, extra or {}) if not err
+                                            else Grade(0.0, f"generation error: {err}"))
 
     def finish(i, result):
         nonlocal total_score, done_n, out_tokens

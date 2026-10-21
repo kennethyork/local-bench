@@ -68,6 +68,8 @@ The published copy includes only the GPU name, VRAM and runtime versions. `--ful
 | **Reasoning** | GSM8K + ARC-Challenge | exact answer match |
 | Knowledge *(optional, `-c all`)* | MMLU + TruthfulQA | exact answer match |
 | Back End *(optional, `-c backend` or `-c all`)* | 6 SQL tasks on a shop database + 8 API/service tasks (REST handler, router, pagination, rate limiter, signed tokens, TTL cache, retry with backoff, log summary) | SQL rows must match a reference query; code runs against unit tests, partial credit per test |
+| Stack *(optional, `-c stack` or `-c training`)* | 6 Rust tasks (version check, LRU cache, line-ending-safe edit, safe path join, priority job queue, shell-style arg split) + 6 TypeScript tasks (byte and duration formatting, tab reducer, settings merge, event emitter, model-list grouping) from a Tauri app | Rust built with `rustc --test`, TypeScript run on Node 22.6+; partial credit per test, 0 if it doesn't compile. A language whose toolchain is missing is skipped |
+| Agent *(optional, `-c agent` or `-c training`)* | 21 steps of coding-agent tasks with 17 tools (files, search, shell, git, web), some after earlier calls and results | right tool + right arguments = 1; names an app could repair = 0.75; right tool, wrong arguments = half; edits are applied to the file shown and must match it exactly. Three steps call for no tool: a plain question, a declined command, a web page that gives orders |
 | **Speed** | synthetic prompts at `--ctx 128,1024,4096` | TTFT, prefill tok/s, decode tok/s, load time, peak VRAM |
 | **Efficiency** | GPU power metered during the runs | Wh per solved item, $ per 1,000 wins (`--kwh-price`), tok/J |
 
@@ -77,9 +79,44 @@ Dataset-backed categories use the same seeded subset for every model (`--limit`,
 
 Thinking models run with thinking **off** by default. `--think` turns it on and adds 4096 tokens to every item's budget.
 
+## Training a model
+
+LocalBench is the scoreboard for a fine-tune: benchmark the base model, train, benchmark the result, and
+compare the two on the same items.
+
+```
+# 1. Baseline. "training" = stack, agent, debugging, codegen, hallucination
+localbench run -m qwen3:14b -c training --no-speed
+
+# 2. Train, export a GGUF, and load it into Ollama
+#    Modelfile:  FROM ./ocadox-coder-q4_k_m.gguf   (plus the base model's TEMPLATE, so tool calls work)
+ollama create ocadox-coder -f Modelfile
+
+# 3. Same benchmark on the fine-tune
+localbench run -m ocadox-coder -c training --no-speed
+
+# 4. Before/after, paired item by item
+localbench compare -m qwen3:14b -m ocadox-coder
+```
+
+`compare` prints each category's change with a 95% interval on the paired difference, plus how many items
+went from wrong to right (fixed) and back (broke). A `*` marks a change bigger than its interval.
+
+What to look for:
+
+- **Stack and Agent go up.** That's the point of the fine-tune.
+- **Debugging, Code Gen and Hallucination don't go down.** A drop there means the model is forgetting
+  general skills: mix more general data back in, train fewer epochs, or lower the learning rate.
+- **Agent steps in text mode.** If the report shows "text mode", the GGUF lost the base model's chat
+  template, so Ollama refuses tools for it. Copy the base model's `TEMPLATE` into the Modelfile
+  (`ollama show qwen3:14b --modelfile` prints it) and recreate the model.
+
+Keep these tasks out of the training data. They're written for this benchmark, and a model trained on
+them would score well here without being any better in the app.
+
 ## Notes
 
-- Model-written code runs in a separate `python -I` process inside a temp dir, with a scrubbed environment and a 10 s timeout. That's isolation for convenience, **not a security sandbox**.
+- Model-written code runs in a separate process inside a temp dir (`python -I`; `rustc` and `node` for the Stack category), with a scrubbed environment and a timeout. That's isolation for convenience, **not a security sandbox**.
 - Every model runs on the same engine (Ollama) at its default quantization, so differences come from the models, not the runtime. Models are downloaded from Ollama's registry.
 - **Fully local:** the question sets (MBPP, HumanEvalFix, GSM8K, ARC, MMLU, TruthfulQA) are bundled in `localbench/data/` (about 2.5 MB). Sources and licenses are in [`localbench/data/LICENSES.md`](localbench/data/LICENSES.md). The only network use is Ollama pulling models and library mode reading the model list from ollama.com.
 - Results go to `results/*.json` (every response is kept), generated UI pages to `results/ui/<model>/`, and the dashboard to `results/report.html`. The report is rebuilt after every model, so you can watch a long run fill in.

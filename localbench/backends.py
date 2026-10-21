@@ -28,6 +28,105 @@ def use_url(u: str | None) -> None:
 
 THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
 
+# --------------------------------------------------------------------------- tool calls
+# The Agent category sends tools the way Ocadox does. A model whose template has no tool support is
+# refused by Ollama ("does not support tools"); like Ocadox, it then gets the tools described in its
+# instructions and writes each call as a JSON block, so the score reflects what it does in the app.
+
+TEXT_TOOLS_INTRO = (
+    "\n\nTOOLS. This model calls tools by writing them out. To use one, reply with a JSON object in a "
+    "```tool block, like this:\n\n```tool\n{\"name\": \"fs_read_file\", \"arguments\": {\"path\": \"src/main.py\"}}\n```\n\n"
+    "Use the exact tool names below and put every argument inside \"arguments\". When the task is done, "
+    "reply normally, with no tool block.\n\nThe tools (arguments marked * are required):\n")
+
+
+def no_tools_error(message: str) -> bool:
+    m = message.lower()
+    return "does not support tools" in m or "doesn't support tools" in m or "tools are not supported" in m
+
+
+def text_tools_prompt(tools: list[dict]) -> str:
+    lines = []
+    for t in tools:
+        f = t.get("function", {})
+        req = set(f.get("parameters", {}).get("required", []))
+        params = ", ".join(f"{k}{'*' if k in req else ''}: {v.get('type', 'any')}"
+                           for k, v in f.get("parameters", {}).get("properties", {}).items())
+        desc = " ".join(f.get("description", "").split()).split(". ")[0][:200]
+        lines.append(f"- {f.get('name')}({params}): {desc}")
+    return TEXT_TOOLS_INTRO + "\n".join(lines) + "\n"
+
+
+def as_text_mode(messages: list[dict], tools: list[dict]) -> list[dict]:
+    """Messages for a model without tool calling: tools in the system prompt, results as user turns,
+    earlier calls written out as tool blocks."""
+    out = []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            out.append({"role": "system", "content": m.get("content", "") + text_tools_prompt(tools)})
+        elif role == "tool":
+            out.append({"role": "user", "content": "[Tool result] " + m.get("content", "")})
+        elif role == "assistant" and m.get("tool_calls"):
+            calls = "\n".join("```tool\n" + json.dumps({"name": c["function"]["name"], "arguments": c["function"].get("arguments", {})})
+                              + "\n```" for c in m["tool_calls"])
+            out.append({"role": "assistant", "content": (m.get("content") or "") + ("\n" if m.get("content") else "") + calls})
+        else:
+            out.append(m)
+    if not any(m.get("role") == "system" for m in out):
+        out.insert(0, {"role": "system", "content": text_tools_prompt(tools)})
+    return out
+
+
+def _json_objects(text: str) -> list[str]:
+    """Brace-balanced JSON objects in free text (string-aware)."""
+    out, depth, start, in_str, esc = [], 0, 0, False, False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                out.append(text[start:i + 1])
+    return out
+
+
+def parse_text_tool_calls(text: str) -> list[dict]:
+    """Tool calls a model wrote as text: {"name": ..., "arguments": {...}} (or "parameters")."""
+    calls = []
+    for raw in _json_objects(text):
+        try:
+            v = json.loads(raw)
+        except ValueError:
+            continue
+        fn = v.get("function") if isinstance(v.get("function"), dict) else v
+        name = v.get("function") if isinstance(v.get("function"), str) else fn.get("name")
+        if isinstance(name, str) and name:
+            args = fn.get("arguments", fn.get("parameters", v.get("arguments", v.get("parameters", {}))))
+            calls.append({"name": name, "arguments": _as_args(args)})
+    return calls
+
+
+def _as_args(args) -> dict:
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return {}
+    return args if isinstance(args, dict) else {}
+
 
 def strip_thinking(text: str) -> str:
     return THINK_RE.sub("", text).strip()
@@ -77,7 +176,8 @@ class Backend:
         raise NotImplementedError
 
     def generate(self, messages: list[dict], max_tokens: int = 256, temperature: float = 0.0,
-                 num_ctx: int | None = None, seed: int = 0) -> GenResult:
+                 num_ctx: int | None = None, seed: int = 0, tools: list[dict] | None = None) -> GenResult:
+        """With `tools`, the result's extra has `tool_calls` ([{"name", "arguments"}]) and `text_tools`."""
         raise NotImplementedError
 
     def info(self) -> dict:
@@ -103,6 +203,7 @@ class OllamaBackend(Backend):
         self.keep_alive = keep_alive
         self.num_ctx = num_ctx  # always sent, so Ollama never silently allocates its (huge) default context
         self._send_think = True  # flipped off if the server/model rejects the field
+        self._text_tools = False  # set when the model refuses native tools (see TEXT_TOOLS_INTRO)
 
     def _post(self, path, payload, stream=False, timeout=3600):
         r = requests.post(f"{url()}{path}", json=payload, stream=stream, timeout=timeout)
@@ -137,25 +238,32 @@ class OllamaBackend(Backend):
                 return
             time.sleep(0.2)
 
-    def generate(self, messages, max_tokens=256, temperature=0.0, num_ctx=None, seed=0) -> GenResult:
+    def generate(self, messages, max_tokens=256, temperature=0.0, num_ctx=None, seed=0, tools=None) -> GenResult:
         opts = {"num_predict": max_tokens, "temperature": temperature, "seed": seed}
         num_ctx = num_ctx or self.num_ctx
         if num_ctx:
             opts["num_ctx"] = num_ctx
-        payload = {"model": self.model, "messages": messages, "stream": True,
+        text_tools = bool(tools) and self._text_tools
+        sent = as_text_mode(messages, tools) if text_tools else messages
+        payload = {"model": self.model, "messages": sent, "stream": True,
                    "options": opts, "keep_alive": self.keep_alive}
+        if tools and not text_tools:
+            payload["tools"] = tools
         if self._send_think:
             payload["think"] = self.think
         t0 = time.perf_counter()
         try:
             r = self._post("/api/chat", payload, stream=True)
         except RuntimeError as e:
+            if tools and not text_tools and no_tools_error(str(e)):
+                self._text_tools = True  # remembered for this model's remaining items
+                return self.generate(messages, max_tokens, temperature, num_ctx, seed, tools)
             if "think" in str(e).lower() and self._send_think:
                 self._send_think = False
-                return self.generate(messages, max_tokens, temperature, num_ctx, seed)
+                return self.generate(messages, max_tokens, temperature, num_ctx, seed, tools)
             raise
         ttft = None
-        text, thinking, final = [], [], {}
+        text, thinking, final, calls = [], [], {}, []
         for line in r.iter_lines():
             if not line:
                 continue
@@ -165,10 +273,18 @@ class OllamaBackend(Backend):
                 ttft = time.perf_counter() - t0
             text.append(msg.get("content", ""))
             thinking.append(msg.get("thinking", "") or "")
+            for c in msg.get("tool_calls") or []:
+                fn = c.get("function", {})
+                calls.append({"name": fn.get("name", ""), "arguments": _as_args(fn.get("arguments", {}))})
             if chunk.get("done"):
                 final = chunk
         total = time.perf_counter() - t0
         raw = "".join(text)
+        extra = {"done_reason": final.get("done_reason")}
+        if tools:
+            if not calls:  # text mode, or a model that wrote its call as text anyway
+                calls = parse_text_tool_calls(strip_thinking(raw))
+            extra.update(tool_calls=calls, text_tools=text_tools)
         return GenResult(
             text=strip_thinking(raw),
             thinking="".join(thinking),
@@ -178,7 +294,7 @@ class OllamaBackend(Backend):
             total_s=total,
             prompt_eval_s=(final.get("prompt_eval_duration") or 0) / 1e9 or None,
             gen_s=(final.get("eval_duration") or 0) / 1e9 or None,
-            extra={"done_reason": final.get("done_reason")},
+            extra=extra,
         )
 
     def info(self) -> dict:

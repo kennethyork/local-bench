@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 import webbrowser
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from . import fit, perf, report
 from .backends import ensure_ollama, list_ollama_models, make_backend, not_benchmarkable, ollama_entry, ollama_name
-from .categories import DEFAULT, registry, run_category
+from .categories import DEFAULT, PRESETS, registry, run_category
 from .governor import DEFAULT_PROFILE, PROFILES, Governor, cap_status, reset_low_limit, restore_leftover_limit
 from .server import PORT as PRIVATE_PORT
 from .server import PRIVATE, kill_orphan_runners, kill_stale_private, unload_all
@@ -274,11 +275,62 @@ def _bench_part(spec, a, cats) -> None:
 def _cats(a):
     reg = registry()
     cats = DEFAULT if a.categories == "default" else list(reg) if a.categories == "all" else \
-        [c.strip() for c in a.categories.split(",")]
+        PRESETS[a.categories] if a.categories in PRESETS else [c.strip() for c in a.categories.split(",")]
     for c in cats:
         if c not in reg:
             sys.exit(f"unknown category '{c}'. choose from: {', '.join(reg)}")
     return cats
+
+
+def compare(cats: dict, base: str, tuned: str) -> list[dict]:
+    """Per-category change from `base` to `tuned`, paired item by item (same items, same order for both).
+
+    The interval is a 95% CI on the mean per-item difference, which is much tighter than comparing two
+    independent scores; `fixed` and `broke` count items that went from wrong to right and back."""
+    rows = []
+    for cat in [c for c in cats.get(base, {}) if c in cats.get(tuned, {})]:
+        b, t = cats[base][cat], cats[tuned][cat]
+        bs = {r["id"]: r["score"] for r in b.get("records", [])}
+        ts = {r["id"]: r["score"] for r in t.get("records", [])}
+        ids = [i for i in bs if i in ts]
+        d = [100 * (ts[i] - bs[i]) for i in ids]
+        n = len(d)
+        mean = sum(d) / n if n else 0.0
+        var = sum((x - mean) ** 2 for x in d) / (n - 1) if n > 1 else 0.0
+        ci = 1.96 * (var / n) ** 0.5 if n > 1 else 0.0
+        rows.append({"category": cat, "title": b.get("title", cat), "n": n, "base": b["score"], "tuned": t["score"],
+                     "delta": mean, "ci95": ci, "significant": n > 1 and abs(mean) > ci,
+                     "fixed": sum(bs[i] < 0.999 <= ts[i] for i in ids), "broke": sum(ts[i] < 0.999 <= bs[i] for i in ids)})
+    return rows
+
+
+def cmd_compare(a):
+    from .report import collect
+    cats = collect()["cats"]
+    base, tuned = (_label(m) for m in a.models)
+    for m in (base, tuned):
+        if m not in cats:
+            sys.exit(f"no results for {m}. Run it first: localbench run -m {m.removeprefix('ollama:')} -c training --no-speed")
+    rows = compare(cats, base, tuned)
+    if a.categories:
+        want = set(PRESETS.get(a.categories, a.categories.split(",")))
+        rows = [r for r in rows if r["category"] in want]
+    if not rows:
+        sys.exit("these two models have no categories in common yet")
+    if a.json:
+        print(json.dumps({"base": base, "tuned": tuned, "categories": rows}, indent=2))
+        return
+    print(f"\n{base}  ->  {tuned}\n")
+    print(f"{'category':<22}{'items':>6}{'base':>8}{'tuned':>8}{'change':>10}{'95% CI':>9}  fixed/broke")
+    for r in rows:
+        mark = "" if not r["significant"] else "  *"
+        print(f"{r['title'][:21]:<22}{r['n']:>6}{r['base']:>8.1f}{r['tuned']:>8.1f}{r['delta']:>+10.1f}"
+              f"{'±' + format(r['ci95'], '.1f'):>9}  {r['fixed']}/{r['broke']}{mark}")
+    print("\n* the change is bigger than its 95% interval (paired over the same items).")
+    lost = [r["title"] for r in rows if r["significant"] and r["delta"] < 0]
+    if lost:
+        print(f"Got worse: {', '.join(lost)}. A fine-tune that forgets general skills usually needs more general "
+              "data mixed in, fewer epochs or a lower learning rate.")
 
 
 def cmd_run(a):
@@ -521,8 +573,9 @@ def main(argv=None):
     common(sp)
     speed_args(sp)
     sp.add_argument("-c", "--categories", default="default",
-                    help="'default', 'all', or a comma list (debugging,codegen,refactoring,security,"
-                         "hallucination,ui,reasoning,knowledge,backend)")
+                    help="'default', 'all', 'training' (stack,agent,debugging,codegen,hallucination), or a comma "
+                         "list (debugging,codegen,refactoring,security,hallucination,ui,reasoning,knowledge,backend,"
+                         "stack,agent)")
     sp.add_argument("--limit", type=int, default=40,
                     help="max items for dataset-backed categories (0 = full dataset). Curated sets always run in full.")
     sp.add_argument("--max-tokens", type=int, help="override max output tokens per item")
@@ -588,12 +641,21 @@ def main(argv=None):
     sp.add_argument("--force", action="store_true", help="unload even while a LocalBench run is active")
     sp.set_defaults(fn=cmd_unload)
 
+    sp = sub.add_parser("compare", help="before/after: how a fine-tuned model changed from its base, per category")
+    sp.add_argument("-m", "--model", dest="models", action="append", required=True,
+                    help="give it twice: first the base model, then the fine-tuned one")
+    sp.add_argument("-c", "--categories", help="only these: 'training' or a comma list (default: all they share)")
+    sp.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    sp.set_defaults(fn=cmd_compare)
+
     sp = sub.add_parser("report", help="rebuild results/report.html")
     sp.add_argument("--kwh-price", type=float, default=0.15)
     sp.add_argument("--open", action="store_true")
     sp.set_defaults(fn=_report)
 
     a = p.parse_args(argv)
+    if a.cmd == "compare" and len(a.models) != 2:
+        p.error("compare takes exactly two models: -m BASE -m TUNED")
     if hasattr(a, "models") and not a.models and a.cmd != "library":
         a.models = default_models()
         print("Models:", ", ".join(a.models) or "(none found - is Ollama running?)")
