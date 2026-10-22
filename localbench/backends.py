@@ -150,7 +150,7 @@ def _function_tags(text: str, known: list[str]) -> list[dict]:
         if m.group(1) in known:
             body = m.group(2).strip()
             if "<parameter=" in body:  # Qwen 3.5+/Qwen3-Coder: <parameter=key>\nvalue\n</parameter>
-                args = {k.strip("\"' "): re.sub(r"^\r?\n|\r?\n$", "", v)
+                args = {k.strip("\"' "): re.sub(r"\r?\n\Z", "", re.sub(r"\A\r?\n", "", v))
                         for k, v in re.findall(r"<parameter=([^>]+)>(.*?)(?=</parameter>|<parameter=|$)", m.group(2), re.S)}
                 calls.append({"name": m.group(1), "arguments": args})
                 continue
