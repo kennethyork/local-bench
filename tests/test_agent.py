@@ -252,3 +252,20 @@ class TrainedFormats(unittest.TestCase):
     def test_gemma_style_scores_full_marks(self):
         g = grade("read_file", self.parse('```tool_code\nfs_read_file(path="src-tauri/src/lib.rs")\n```'))
         self.assertEqual(g.score, 1.0, g.detail)
+
+
+class QwenFormat(unittest.TestCase):
+    KNOWN = [t["function"]["name"] for t in agent.TOOLS]
+
+    def test_qwen_xml_calls(self):
+        text = ("Looking.\n<tool_call>\n<function=fs_read_file>\n<parameter=path>\nsrc-tauri/src/lib.rs\n</parameter>\n"
+                "</function>\n</tool_call>")
+        calls = backends.parse_text_tool_calls(text, self.KNOWN)
+        self.assertEqual(calls, [{"name": "fs_read_file", "arguments": {"path": "src-tauri/src/lib.rs"}}])
+        self.assertEqual(grade("read_file", calls).score, 1.0)
+        body = '{"name": "fs_delete", "arguments": {"path": "x"}}\n\nend\n'
+        text = (f"<tool_call>\n<function=fs_write_file>\n<parameter=path>\na.json\n</parameter>\n<parameter=content>\n{body}\n"
+                "</parameter>\n</function>\n</tool_call>")
+        calls = backends.parse_text_tool_calls(text, self.KNOWN)
+        self.assertEqual([c["name"] for c in calls], ["fs_write_file"])
+        self.assertEqual(calls[0]["arguments"]["content"], body)

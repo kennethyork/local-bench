@@ -108,6 +108,10 @@ def parse_text_tool_calls(text: str, known: list[str] | None = None) -> list[dic
     JSON {"name": ..., "arguments": {...}} (or "parameters"); the same written loosely (single quotes,
     trailing commas, True/None); and, given the offered tool names, Llama 3.1's <function=name>{...}</function>
     and Python-style name(key=value, ...) as Gemma and Llama 3.2 are trained to write."""
+    if known and "<function=" in text:  # tag-style first: a value can hold JSON that isn't a call
+        tagged = _function_tags(text, known)
+        if tagged:
+            return tagged
     objects = _json_objects(text)
     for loads in (json.loads, _loose):
         calls = []
@@ -142,9 +146,14 @@ def _loose(raw: str):
 
 def _function_tags(text: str, known: list[str]) -> list[dict]:
     calls = []
-    for m in re.finditer(r"<function=\s*\"?([\w.-]+)\"?\s*>(.*?)(?:</function>|$)", text, re.S):
+    for m in re.finditer(r"<function=\s*\"?([\w.-]+)\"?\s*>(.*?)(?=</function>|<function=|$)", text, re.S):
         if m.group(1) in known:
             body = m.group(2).strip()
+            if "<parameter=" in body:  # Qwen 3.5+/Qwen3-Coder: <parameter=key>\nvalue\n</parameter>
+                args = {k.strip("\"' "): re.sub(r"^\r?\n|\r?\n$", "", v)
+                        for k, v in re.findall(r"<parameter=([^>]+)>(.*?)(?=</parameter>|<parameter=|$)", m.group(2), re.S)}
+                calls.append({"name": m.group(1), "arguments": args})
+                continue
             try:
                 args = json.loads(body) if body else {}
             except ValueError:
