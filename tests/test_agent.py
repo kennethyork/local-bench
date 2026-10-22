@@ -219,3 +219,36 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(by_id["agent/read_file"]["score"], 1.0)  # the fake always reads lib.rs
         self.assertEqual(by_id["agent/no_tool_question"]["score"], 0.0)
         self.assertIn("text mode", r["extra"]["text_mode"])
+
+
+class TrainedFormats(unittest.TestCase):
+    """The formats Ocadox's agent reads besides JSON, so Agent scores match what the app can run."""
+    KNOWN = [t["function"]["name"] for t in agent.TOOLS]
+
+    def parse(self, text):
+        return backends.parse_text_tool_calls(text, self.KNOWN)
+
+    def test_python_style(self):
+        gemma = 'Reading it.\n```tool_code\nprint(fs_read_file(path="src/main.rs", start_line=10))\n```'
+        self.assertEqual(self.parse(gemma), [{"name": "fs_read_file", "arguments": {"path": "src/main.rs", "start_line": 10}}])
+        llama = "[default_api.fs_write_file(path='a.txt', content='it\\'s \"quoted\" (really)\\n'), git_status()]"
+        self.assertEqual(self.parse(llama), [{"name": "fs_write_file", "arguments": {"path": "a.txt", "content": 'it\'s "quoted" (really)\n'}},
+                                             {"name": "git_status", "arguments": {}}])
+        multi = "fs_edit_file(path=\"a.py\", find='''def f():\n    return (1)''', replace=\"x\", replace_all=False)"
+        self.assertEqual(self.parse(multi)[0]["arguments"], {"path": "a.py", "find": "def f():\n    return (1)", "replace": "x", "replace_all": False})
+
+    def test_code_and_prose_are_not_calls(self):
+        for text in ["def fs_read_file(path='x'):\n    pass", "Call fs_read_file(path) with the file.",
+                     "data = reader.fs_read_file(path='x')", "subprocess.run(cmd, shell=True)", "search(query='x')"]:
+            self.assertEqual(self.parse(text), [], text)
+
+    def test_function_tags_and_loose_json(self):
+        self.assertEqual(self.parse('<function=fs_list_dir>{"path": "src"}</function>'),
+                         [{"name": "fs_list_dir", "arguments": {"path": "src"}}])
+        self.assertEqual(self.parse("{'name': 'shell_run', 'arguments': {'command': 'cargo test', 'x': True,},}"),
+                         [{"name": "shell_run", "arguments": {"command": "cargo test", "x": True}}])
+        self.assertEqual(self.parse("{'name': 'nope', 'arguments': {}}"), [])
+
+    def test_gemma_style_scores_full_marks(self):
+        g = grade("read_file", self.parse('```tool_code\nfs_read_file(path="src-tauri/src/lib.rs")\n```'))
+        self.assertEqual(g.score, 1.0, g.detail)

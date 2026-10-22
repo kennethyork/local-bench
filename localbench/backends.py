@@ -103,19 +103,86 @@ def _json_objects(text: str) -> list[str]:
     return out
 
 
-def parse_text_tool_calls(text: str) -> list[dict]:
-    """Tool calls a model wrote as text: {"name": ..., "arguments": {...}} (or "parameters")."""
+def parse_text_tool_calls(text: str, known: list[str] | None = None) -> list[dict]:
+    """Tool calls a model wrote as text, read the way an agent app reads them (Ocadox's agent.rs):
+    JSON {"name": ..., "arguments": {...}} (or "parameters"); the same written loosely (single quotes,
+    trailing commas, True/None); and, given the offered tool names, Llama 3.1's <function=name>{...}</function>
+    and Python-style name(key=value, ...) as Gemma and Llama 3.2 are trained to write."""
+    objects = _json_objects(text)
+    for loads in (json.loads, _loose):
+        calls = []
+        for raw in objects:
+            try:
+                v = loads(raw)
+            except (ValueError, SyntaxError):
+                continue
+            if not isinstance(v, dict):
+                continue
+            fn = v.get("function") if isinstance(v.get("function"), dict) else v
+            name = v.get("function") if isinstance(v.get("function"), str) else fn.get("name")
+            if isinstance(name, str) and name and (known is None or loads is json.loads or name in known):
+                args = fn.get("arguments", fn.get("parameters", v.get("arguments", v.get("parameters", {}))))
+                calls.append({"name": name, "arguments": _as_args(args)})
+        if calls:
+            return calls
+    if not known:
+        return []
+    return _function_tags(text, known) or _python_style(text, known)
+
+
+def _loose(raw: str):
+    """A Python literal, with JSON's true/false/null allowed too."""
+    import ast
+    tree = ast.parse(raw.strip(), mode="eval")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in ("true", "false", "null"):
+            node.__class__, node.value = ast.Constant, {"true": True, "false": False, "null": None}[node.id]
+    return ast.literal_eval(tree)
+
+
+def _function_tags(text: str, known: list[str]) -> list[dict]:
     calls = []
-    for raw in _json_objects(text):
-        try:
-            v = json.loads(raw)
-        except ValueError:
+    for m in re.finditer(r"<function=\s*\"?([\w.-]+)\"?\s*>(.*?)(?:</function>|$)", text, re.S):
+        if m.group(1) in known:
+            body = m.group(2).strip()
+            try:
+                args = json.loads(body) if body else {}
+            except ValueError:
+                try:
+                    args = _loose(body)
+                except (ValueError, SyntaxError):
+                    args = {}
+            calls.append({"name": m.group(1), "arguments": _as_args(args)})
+    return calls
+
+
+_NAMESPACES = ("default_api.", "functions.", "function.", "tools.", "tool.", "api.")
+
+
+def _python_style(text: str, known: list[str]) -> list[dict]:
+    """name(key=value, ...) with an offered tool's exact name and keyword arguments only, not after
+    `def` and not as someone's method, so code in an answer isn't taken for a call."""
+    import ast
+    calls = []
+    for m in re.finditer(r"(?<![\w.])((?:%s)?)([A-Za-z_]\w*)\(" % "|".join(re.escape(n) for n in _NAMESPACES), text):
+        name = m.group(2)
+        if name not in known or text[:m.start()].endswith("def "):
             continue
-        fn = v.get("function") if isinstance(v.get("function"), dict) else v
-        name = v.get("function") if isinstance(v.get("function"), str) else fn.get("name")
-        if isinstance(name, str) and name:
-            args = fn.get("arguments", fn.get("parameters", v.get("arguments", v.get("parameters", {}))))
-            calls.append({"name": name, "arguments": _as_args(args)})
+        call = None
+        for close in (i for i, ch in enumerate(text[m.end():], m.end()) if ch == ")"):
+            try:  # the shortest stretch up to a ")" that parses as one call
+                node = ast.parse(name + text[m.end() - 1:close + 1], mode="eval").body
+            except SyntaxError:
+                continue
+            call = node if isinstance(node, ast.Call) else None
+            break
+        if call is None or call.args:
+            continue
+        try:
+            args = {k.arg: _loose(ast.unparse(k.value)) for k in call.keywords if k.arg}
+        except (ValueError, SyntaxError):
+            continue
+        calls.append({"name": name, "arguments": args})
     return calls
 
 
@@ -283,7 +350,7 @@ class OllamaBackend(Backend):
         extra = {"done_reason": final.get("done_reason")}
         if tools:
             if not calls:  # text mode, or a model that wrote its call as text anyway
-                calls = parse_text_tool_calls(strip_thinking(raw))
+                calls = parse_text_tool_calls(strip_thinking(raw), [t.get("function", {}).get("name") for t in tools])
             extra.update(tool_calls=calls, text_tools=text_tools)
         return GenResult(
             text=strip_thinking(raw),
